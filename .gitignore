@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+
+data/imagenet/
+data/imagenet-1k/
+results/generated_images/
+results/logs/
+results/*.csv
+results/*.json
+results/*.jsonl
+
+.DS_Store
+.vscode/
