@@ -1,64 +1,90 @@
-"""Textual backward logic.
+"""Custom TextGrad-like textual backward logic.
 
-This module contains the prompt-level optimization pieces inspired by TextGrad:
-generate a prompt, read classifier feedback, and ask the LLM to improve the
-prompt in natural language.
+TextGrad backpropagates feedback through text.  Our simplified version reads
+classifier feedback, turns it into a textual loss, and asks the LLM client for a
+better prompt.
 """
 
-from typing import Dict
+from pathlib import Path
 
-from src.llm_client import BaseLLMClient
-
-
-def generate_initial_prompt(llm_client: BaseLLMClient, class_name: str) -> str:
-    """Generate the first prompt for a target class.
-
-    Args:
-        llm_client: LLM client used to write prompts.
-        class_name: Target ImageNet class.
-
-    Returns:
-        Initial text-to-image prompt.
-    """
-    return llm_client.generate_initial_prompt(class_name)
+from src.llm_client import DummyLLMClient
 
 
-def build_classifier_feedback(class_name: str, classifier_output: Dict) -> Dict:
-    """Convert classifier output into compact LLM feedback.
+class TextualBackwardOptimizer:
+    """Small prompt optimizer that uses prompt files and an LLM client."""
 
-    Args:
-        class_name: Target ImageNet class.
-        classifier_output: Output dictionary returned by the classifier.
+    def __init__(self, llm_client: DummyLLMClient, prompts_dir: str | Path) -> None:
+        """Load system prompt files used by the textual update steps.
 
-    Returns:
-        Feedback dictionary used for prompt refinement.
-    """
-    return {
-        "target_class": class_name,
-        "target_confidence": classifier_output["target_confidence"],
-        "target_rank": classifier_output["target_rank"],
-        "top_predictions": classifier_output["top_predictions"],
-    }
+        Args:
+            llm_client: Client with initial/loss/refinement methods.
+            prompts_dir: Directory containing prompt text files.
+        """
+        self.llm_client = llm_client
+        self.prompts_dir = Path(prompts_dir)
+        self.initial_system_prompt = self._read_prompt("initial_prompt_system.txt")
+        self.loss_system_prompt = self._read_prompt("textual_loss_system.txt")
+        self.refinement_system_prompt = self._read_prompt("refinement_prompt_system.txt")
 
+    def initial_prompt(self, target_class: str) -> str:
+        """Generate the first prompt for one target class.
 
-def refine_prompt(
-    llm_client: BaseLLMClient,
-    class_name: str,
-    current_prompt: str,
-    classifier_output: Dict,
-    step: int,
-) -> str:
-    """Refine a prompt using classifier feedback.
+        Args:
+            target_class: Desired ImageNet class.
 
-    Args:
-        llm_client: LLM client used to refine prompts.
-        class_name: Target ImageNet class.
-        current_prompt: Prompt used for the current generated image.
-        classifier_output: Output dictionary returned by the classifier.
-        step: Current optimization step.
+        Returns:
+            Initial image prompt.
+        """
+        return self.llm_client.generate_initial_prompt(target_class, self.initial_system_prompt)
 
-    Returns:
-        Refined prompt for the next step.
-    """
-    feedback = build_classifier_feedback(class_name, classifier_output)
-    return llm_client.refine_prompt(class_name, current_prompt, feedback, step)
+    def textual_loss(self, target_class: str, current_prompt: str, classifier_result: dict) -> str:
+        """Compute natural language feedback for the current prompt.
+
+        Args:
+            target_class: Desired ImageNet class.
+            current_prompt: Prompt used for the current generated image.
+            classifier_result: Output from classifier.predict().
+
+        Returns:
+            Textual loss string.
+        """
+        return self.llm_client.compute_textual_loss(
+            target_class,
+            current_prompt,
+            classifier_result,
+            self.loss_system_prompt,
+        )
+
+    def refine(self, target_class: str, current_prompt: str, classifier_result: dict) -> str:
+        """Create the next prompt using classifier feedback.
+
+        Args:
+            target_class: Desired ImageNet class.
+            current_prompt: Prompt used for the current generated image.
+            classifier_result: Output from classifier.predict().
+
+        Returns:
+            Refined prompt.
+        """
+        return self.llm_client.refine_prompt(
+            target_class,
+            current_prompt,
+            classifier_result,
+            self.refinement_system_prompt,
+        )
+
+    def _read_prompt(self, file_name: str) -> str:
+        """Read one prompt file and return a fallback if it is empty.
+
+        Args:
+            file_name: Prompt file name inside prompts_dir.
+
+        Returns:
+            Prompt text.
+        """
+        path = self.prompts_dir / file_name
+        if not path.exists():
+            return "Use concise, practical instructions."
+
+        text = path.read_text(encoding="utf-8").strip()
+        return text or "Use concise, practical instructions."

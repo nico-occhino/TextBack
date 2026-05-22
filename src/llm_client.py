@@ -1,101 +1,89 @@
-"""LLM client interfaces.
+"""Dummy LLM client used by the first TextBack version.
 
-The first version uses a dummy LLM so the whole pipeline runs without paid APIs.
-Later, this file is the natural place to add OpenAI, Gemini, or local LLM calls.
+The real project can later replace this class with an API client.  For now the
+methods return deterministic text, which lets the whole pipeline run offline.
 """
 
-from dataclasses import dataclass
-from typing import Dict, List
 
+class DummyLLMClient:
+    """Small deterministic replacement for a language model."""
 
-class BaseLLMClient:
-    """Minimal interface used by the textual backward pipeline."""
-
-    def generate_initial_prompt(self, class_name: str) -> str:
+    def generate_initial_prompt(self, target_class: str, system_prompt: str) -> str:
         """Create the first image prompt for a target class.
 
         Args:
-            class_name: ImageNet class name to visualize.
+            target_class: ImageNet class we want the classifier to activate.
+            system_prompt: Instruction text loaded from prompts/.
 
         Returns:
-            A text prompt for the image generator.
+            A simple text-to-image prompt.
         """
-        raise NotImplementedError
-
-    def refine_prompt(self, class_name: str, current_prompt: str, feedback: Dict, step: int) -> str:
-        """Improve a prompt using classifier feedback.
-
-        Args:
-            class_name: Target ImageNet class.
-            current_prompt: Prompt used in the previous step.
-            feedback: Dictionary containing top predictions and target rank.
-            step: Current optimization step.
-
-        Returns:
-            A refined text prompt.
-        """
-        raise NotImplementedError
-
-
-@dataclass
-class DummyLLMClient(BaseLLMClient):
-    """Simple deterministic LLM replacement used in dry-run mode."""
-
-    style_words: List[str] | None = None
-
-    def __post_init__(self) -> None:
-        """Fill default style words after dataclass initialization."""
-        if self.style_words is None:
-            self.style_words = ["centered", "well lit", "clear background"]
-
-    def generate_initial_prompt(self, class_name: str) -> str:
-        """Return a plain prompt that mentions the target class.
-
-        Args:
-            class_name: ImageNet class name to visualize.
-
-        Returns:
-            A simple prompt suitable for a dummy or real image generator.
-        """
-        return f"A photo of a {class_name}, centered, natural colors."
-
-    def refine_prompt(self, class_name: str, current_prompt: str, feedback: Dict, step: int) -> str:
-        """Append small, readable refinements based on classifier feedback.
-
-        Args:
-            class_name: Target ImageNet class.
-            current_prompt: Prompt used in the previous step.
-            feedback: Classifier feedback dictionary.
-            step: Current optimization step.
-
-        Returns:
-            A slightly stronger prompt for the next image.
-        """
-        target_rank = feedback.get("target_rank")
-        top_label = feedback.get("top_predictions", [{}])[0].get("label", "unknown")
-
-        # The dummy refinement imitates TextGrad-style natural language feedback.
-        if target_rank == 1:
-            note = f"Keep the {class_name} as the only main object."
-        else:
-            note = f"Make it look less like {top_label} and more clearly like {class_name}."
-
         return (
-            f"{current_prompt} Refinement {step}: {note} "
-            f"Use canonical visual features and avoid distracting objects."
+            f"A clear ImageNet-style photo of a {target_class}. "
+            f"The {target_class} is centered, well lit, and easy to recognize."
         )
 
+    def compute_textual_loss(
+        self,
+        target_class: str,
+        current_prompt: str,
+        classifier_feedback: dict,
+        system_prompt: str,
+    ) -> str:
+        """Describe what went wrong in natural language.
 
-def build_llm_client(config: Dict) -> BaseLLMClient:
-    """Create the LLM client requested by the config.
+        Args:
+            target_class: Desired ImageNet class.
+            current_prompt: Prompt that produced the current image.
+            classifier_feedback: Dictionary returned by the classifier.
+            system_prompt: Instruction text loaded from prompts/.
 
-    Args:
-        config: Loaded configuration dictionary.
+        Returns:
+            Textual loss/feedback for the current prompt.
+        """
+        target_rank = classifier_feedback.get("target_rank")
+        top1_label = classifier_feedback.get("top1_label", "unknown")
+        target_confidence = classifier_feedback.get("target_confidence", 0.0)
 
-    Returns:
-        An object implementing BaseLLMClient.
-    """
-    provider = config.get("llm", {}).get("provider", "dummy")
-    if provider != "dummy":
-        print("Only the dummy LLM is implemented; falling back to dummy.")
-    return DummyLLMClient()
+        if target_rank == 1:
+            return (
+                f"The prompt is successful: the classifier predicts {target_class} "
+                f"as top-1 with confidence {target_confidence:.3f}."
+            )
+
+        return (
+            f"The classifier prefers {top1_label} instead of {target_class}. "
+            f"The target confidence is {target_confidence:.3f}. "
+            f"The next prompt should emphasize canonical {target_class} features "
+            f"and remove cues related to {top1_label}."
+        )
+
+    def refine_prompt(
+        self,
+        target_class: str,
+        current_prompt: str,
+        classifier_feedback: dict,
+        system_prompt: str,
+    ) -> str:
+        """Update the image prompt using classifier feedback.
+
+        Args:
+            target_class: Desired ImageNet class.
+            current_prompt: Prompt that produced the current image.
+            classifier_feedback: Dictionary returned by the classifier.
+            system_prompt: Instruction text loaded from prompts/.
+
+        Returns:
+            Refined prompt for the next optimization step.
+        """
+        top1_label = classifier_feedback.get("top1_label", "unknown")
+
+        if classifier_feedback.get("target_rank") == 1:
+            update = f"Keep only the {target_class} as the main object."
+        else:
+            update = f"Make it less like {top1_label} and more clearly like {target_class}."
+
+        return (
+            f"{current_prompt} {update} "
+            f"Use a plain background and avoid distracting context."
+        )

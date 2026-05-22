@@ -1,225 +1,281 @@
-"""Main orchestration code for optimization and inference."""
+"""Main TextBack pipeline.
 
+The pipeline keeps the experiment loop explicit: prompt, image, classifier,
+textual feedback, prompt update.  This is easier to discuss and modify during
+an oral exam than a heavily abstracted framework.
+"""
+
+import json
 from pathlib import Path
-from typing import Dict
 
 from src.classifier import build_classifier
-from src.config import prepare_output_dirs
-from src.evaluation import activation_maximization_rate
+from src.config import create_output_dirs
 from src.image_generator import build_image_generator
-from src.llm_client import build_llm_client
-from src.logging_utils import append_csv, append_jsonl, write_json
-from src.textual_backward import generate_initial_prompt, refine_prompt
+from src.llm_client import DummyLLMClient
+from src.logging_utils import append_csv_row, append_jsonl_record, write_json
+from src.textual_backward import TextualBackwardOptimizer
 from src.utils import ensure_dir, set_seed, slugify
 
 
-OPTIMIZATION_FIELDS = [
-    "class_name",
-    "step",
+OPTIMIZATION_COLUMNS = [
+    "target_class",
+    "iteration",
     "prompt",
+    "textual_loss",
     "image_path",
+    "top1_label",
+    "top1_confidence",
     "target_confidence",
     "target_rank",
-    "top_predictions",
+    "topk",
+]
+
+INFERENCE_COLUMNS = [
+    "target_class",
+    "image_index",
+    "prompt",
+    "image_path",
+    "top1_label",
+    "top1_confidence",
+    "target_confidence",
+    "target_rank",
+    "success",
 ]
 
 
-def run_optimization(config: Dict) -> Dict[str, str]:
-    """Run the textual backward optimization loop.
+class TextBackPipeline:
+    """Orchestrates prompt optimization and inference evaluation."""
 
-    Args:
-        config: Loaded configuration dictionary.
+    def __init__(self, config: dict) -> None:
+        """Initialize all components from the config.
 
-    Returns:
-        Mapping from class name to final optimized prompt.
-    """
-    prepare_output_dirs(config)
-    set_seed(int(config["project"].get("seed", 42)))
+        Args:
+            config: Loaded configuration dictionary.
+        """
+        self.config = config
+        self.paths = config["paths"]
+        self.experiment = config["experiment"]
 
-    llm_client = build_llm_client(config)
-    image_generator = build_image_generator(config)
-    classifier = build_classifier(config)
+        create_output_dirs(config)
+        set_seed(int(config.get("project", {}).get("seed", 42)))
 
-    final_prompts = {}
-    for class_name in config["experiment"]["target_classes"]:
-        final_prompts[class_name] = _optimize_one_class(
-            config,
-            class_name,
-            llm_client,
-            image_generator,
-            classifier,
+        self.llm_client = DummyLLMClient()
+        self.image_generator = build_image_generator(config)
+        self.classifier = build_classifier(config)
+        self.textual_optimizer = TextualBackwardOptimizer(
+            llm_client=self.llm_client,
+            prompts_dir=self.paths["prompts_dir"],
         )
 
-    final_path = Path(config["paths"]["results_dir"]) / "final_prompts.json"
-    write_json(final_path, final_prompts)
-    return final_prompts
+    def run_optimization(self) -> dict[str, str]:
+        """Run prompt optimization for every configured target class.
 
+        Returns:
+            Dictionary mapping each target class to its final prompt.
+        """
+        self._reset_optimization_logs()
+        final_prompts = {}
 
-def _optimize_one_class(config: Dict, class_name: str, llm_client, image_generator, classifier) -> str:
-    """Optimize a prompt for one ImageNet class.
+        for target_class in self.experiment["target_classes"]:
+            print(f"Optimizing prompt for: {target_class}")
+            prompt = self.textual_optimizer.initial_prompt(target_class)
 
-    Args:
-        config: Loaded configuration dictionary.
-        class_name: Target ImageNet class.
-        llm_client: Prompt generation client.
-        image_generator: Text-to-image generator.
-        classifier: Image classifier.
+            for iteration in range(int(self.experiment["n_optimization_steps"])):
+                image_path = self._optimization_image_path(target_class, iteration)
 
-    Returns:
-        Final prompt after all optimization steps.
-    """
-    prompt = generate_initial_prompt(llm_client, class_name)
-    n_steps = int(config["experiment"]["n_optimization_steps"])
-    top_k = int(config["experiment"].get("top_k", 5))
+                # Forward pass: prompt -> image -> classifier prediction.
+                self.image_generator.generate(prompt, image_path)
+                classifier_result = self.classifier.predict(
+                    image_path=image_path,
+                    target_class=target_class,
+                    top_k=int(self.experiment.get("top_k", 5)),
+                )
 
-    for step in range(n_steps):
-        image_path = _optimization_image_path(config, class_name, step)
-        image_generator.generate(prompt, image_path)
-        classifier_output = classifier.classify(image_path, class_name, top_k=top_k)
+                # Backward/update signal: classifier result -> textual loss.
+                textual_loss = self.textual_optimizer.textual_loss(
+                    target_class,
+                    prompt,
+                    classifier_result,
+                )
 
-        _log_optimization_step(config, class_name, step, prompt, image_path, classifier_output)
-        prompt = refine_prompt(llm_client, class_name, prompt, classifier_output, step + 1)
+                self._log_optimization_step(
+                    target_class,
+                    iteration,
+                    prompt,
+                    textual_loss,
+                    image_path,
+                    classifier_result,
+                )
 
-    return prompt
+                prompt = self.textual_optimizer.refine(target_class, prompt, classifier_result)
 
+            final_prompts[target_class] = prompt
 
-def _optimization_image_path(config: Dict, class_name: str, step: int) -> Path:
-    """Build the output path for one optimization image.
+        self._save_final_prompts(final_prompts)
+        return final_prompts
 
-    Args:
-        config: Loaded configuration dictionary.
-        class_name: Target ImageNet class.
-        step: Optimization step index.
+    def run_inference(self) -> dict[str, float]:
+        """Evaluate final prompts with multiple generated images.
 
-    Returns:
-        Path where the image should be saved.
-    """
-    class_dir = Path(config["paths"]["generated_images_dir"]) / slugify(class_name) / "optimization"
-    ensure_dir(class_dir)
-    return class_dir / f"step_{step:03d}.png"
+        Returns:
+            Dictionary mapping each target class to activation maximization rate.
+        """
+        self._reset_inference_logs()
+        final_prompts = self._load_final_prompts()
+        activation_rates = {}
 
+        for target_class, prompt in final_prompts.items():
+            print(f"Running inference for: {target_class}")
+            successes = 0
+            n_images = int(self.experiment["n_inference_images"])
 
-def _log_optimization_step(
-    config: Dict,
-    class_name: str,
-    step: int,
-    prompt: str,
-    image_path: Path,
-    classifier_output: Dict,
-) -> None:
-    """Write one optimization step to CSV and JSONL logs.
+            for image_index in range(n_images):
+                image_path = self._inference_image_path(target_class, image_index)
+                self.image_generator.generate(prompt, image_path)
 
-    Args:
-        config: Loaded configuration dictionary.
-        class_name: Target ImageNet class.
-        step: Optimization step index.
-        prompt: Prompt used for the generated image.
-        image_path: Saved image path.
-        classifier_output: Output dictionary returned by the classifier.
-    """
-    results_dir = Path(config["paths"]["results_dir"])
-    row = {
-        "class_name": class_name,
-        "step": step,
-        "prompt": prompt,
-        "image_path": str(image_path),
-        "target_confidence": classifier_output["target_confidence"],
-        "target_rank": classifier_output["target_rank"],
-        "top_predictions": classifier_output["top_predictions"],
-    }
+                classifier_result = self.classifier.predict(
+                    image_path=image_path,
+                    target_class=target_class,
+                    top_k=int(self.experiment.get("top_k", 5)),
+                )
 
-    append_csv(results_dir / "optimization_logs.csv", row, OPTIMIZATION_FIELDS)
-    append_jsonl(results_dir / "optimization_logs.jsonl", row)
+                success = classifier_result["target_rank"] == 1
+                successes += int(success)
+                self._log_inference_result(target_class, image_index, prompt, image_path, classifier_result, success)
 
+            activation_rates[target_class] = successes / n_images if n_images > 0 else 0.0
 
-def run_inference(config: Dict) -> Dict[str, Dict]:
-    """Generate images from final prompts and compute success rates.
+        write_json(Path(self.paths["results_dir"]) / "activation_rates.json", activation_rates)
+        return activation_rates
 
-    Args:
-        config: Loaded configuration dictionary.
+    def _optimization_image_path(self, target_class: str, iteration: int) -> Path:
+        """Build an optimization image path for a class and iteration.
 
-    Returns:
-        Per-class inference metrics.
-    """
-    prepare_output_dirs(config)
-    image_generator = build_image_generator(config)
-    classifier = build_classifier(config)
+        Args:
+            target_class: Desired ImageNet class.
+            iteration: Optimization step index.
 
-    final_prompts_path = Path(config["paths"]["results_dir"]) / "final_prompts.json"
-    final_prompts = _load_final_prompts(final_prompts_path)
+        Returns:
+            Path where the generated image should be saved.
+        """
+        image_dir = Path(self.paths["generated_images_dir"]) / slugify(target_class) / "optimization"
+        ensure_dir(image_dir)
+        return image_dir / f"step_{iteration:03d}.png"
 
-    metrics = {}
-    for class_name, prompt in final_prompts.items():
-        metrics[class_name] = _run_inference_for_class(config, class_name, prompt, image_generator, classifier)
+    def _inference_image_path(self, target_class: str, image_index: int) -> Path:
+        """Build an inference image path for a class and sample index.
 
-    metrics_path = Path(config["paths"]["results_dir"]) / "inference_metrics.json"
-    write_json(metrics_path, metrics)
-    return metrics
+        Args:
+            target_class: Desired ImageNet class.
+            image_index: Inference sample index.
 
+        Returns:
+            Path where the generated image should be saved.
+        """
+        image_dir = Path(self.paths["generated_images_dir"]) / slugify(target_class) / "inference"
+        ensure_dir(image_dir)
+        return image_dir / f"sample_{image_index:03d}.png"
 
-def _load_final_prompts(path: Path) -> Dict[str, str]:
-    """Load final prompts saved by optimization.
+    def _log_optimization_step(
+        self,
+        target_class: str,
+        iteration: int,
+        prompt: str,
+        textual_loss: str,
+        image_path: Path,
+        classifier_result: dict,
+    ) -> None:
+        """Save one optimization step to CSV and JSONL logs.
 
-    Args:
-        path: Path to results/final_prompts.json.
+        Args:
+            target_class: Desired ImageNet class.
+            iteration: Optimization step index.
+            prompt: Prompt used for the image.
+            textual_loss: Natural language feedback.
+            image_path: Saved image path.
+            classifier_result: Output from classifier.predict().
+        """
+        row = {
+            "target_class": target_class,
+            "iteration": iteration,
+            "prompt": prompt,
+            "textual_loss": textual_loss,
+            "image_path": str(image_path),
+            "top1_label": classifier_result["top1_label"],
+            "top1_confidence": classifier_result["top1_confidence"],
+            "target_confidence": classifier_result["target_confidence"],
+            "target_rank": classifier_result["target_rank"],
+            "topk": classifier_result["topk"],
+        }
 
-    Returns:
-        Mapping from class name to final prompt.
-    """
-    import json
+        results_dir = Path(self.paths["results_dir"])
+        append_csv_row(results_dir / "optimization_logs.csv", row, OPTIMIZATION_COLUMNS)
+        append_jsonl_record(results_dir / "optimization_logs.jsonl", row)
 
-    if not path.exists():
-        raise FileNotFoundError(
-            f"Final prompts were not found at {path}. Run scripts/run_optimization.py first."
-        )
+    def _log_inference_result(
+        self,
+        target_class: str,
+        image_index: int,
+        prompt: str,
+        image_path: Path,
+        classifier_result: dict,
+        success: bool,
+    ) -> None:
+        """Save one inference image result to CSV.
 
-    with open(path, "r", encoding="utf-8") as file:
-        return json.load(file)
+        Args:
+            target_class: Desired ImageNet class.
+            image_index: Inference sample index.
+            prompt: Final prompt used to generate the image.
+            image_path: Saved image path.
+            classifier_result: Output from classifier.predict().
+            success: True when the target class is top-1.
+        """
+        row = {
+            "target_class": target_class,
+            "image_index": image_index,
+            "prompt": prompt,
+            "image_path": str(image_path),
+            "top1_label": classifier_result["top1_label"],
+            "top1_confidence": classifier_result["top1_confidence"],
+            "target_confidence": classifier_result["target_confidence"],
+            "target_rank": classifier_result["target_rank"],
+            "success": success,
+        }
 
+        append_csv_row(Path(self.paths["results_dir"]) / "inference_results.csv", row, INFERENCE_COLUMNS)
 
-def _run_inference_for_class(config: Dict, class_name: str, prompt: str, image_generator, classifier) -> Dict:
-    """Run inference images for one final prompt.
+    def _save_final_prompts(self, final_prompts: dict[str, str]) -> None:
+        """Save final prompts after optimization.
 
-    Args:
-        config: Loaded configuration dictionary.
-        class_name: Target ImageNet class.
-        prompt: Final optimized prompt.
-        image_generator: Text-to-image generator.
-        classifier: Image classifier.
+        Args:
+            final_prompts: Mapping from target class to final prompt.
+        """
+        write_json(Path(self.paths["results_dir"]) / "final_prompts.json", final_prompts)
 
-    Returns:
-        Dictionary with activation maximization rate and image-level results.
-    """
-    n_images = int(config["experiment"]["n_inference_images"])
-    top_k = int(config["experiment"].get("top_k", 5))
-    image_results = []
+    def _reset_optimization_logs(self) -> None:
+        """Remove old optimization logs before a new run."""
+        results_dir = Path(self.paths["results_dir"])
+        for file_name in ["optimization_logs.csv", "optimization_logs.jsonl"]:
+            path = results_dir / file_name
+            if path.exists():
+                path.unlink()
 
-    for index in range(n_images):
-        image_path = _inference_image_path(config, class_name, index)
-        image_generator.generate(prompt, image_path)
-        classifier_output = classifier.classify(image_path, class_name, top_k=top_k)
-        classifier_output["image_path"] = str(image_path)
-        image_results.append(classifier_output)
+    def _reset_inference_logs(self) -> None:
+        """Remove old inference logs before a new run."""
+        path = Path(self.paths["results_dir"]) / "inference_results.csv"
+        if path.exists():
+            path.unlink()
 
-    return {
-        "prompt": prompt,
-        "n_images": n_images,
-        "activation_maximization_rate": activation_maximization_rate(image_results),
-        "images": image_results,
-    }
+    def _load_final_prompts(self) -> dict[str, str]:
+        """Load final prompts produced by run_optimization().
 
+        Returns:
+            Mapping from target class to final prompt.
+        """
+        path = Path(self.paths["results_dir"]) / "final_prompts.json"
+        if not path.exists():
+            raise FileNotFoundError("Run optimization first: results/final_prompts.json is missing.")
 
-def _inference_image_path(config: Dict, class_name: str, index: int) -> Path:
-    """Build the output path for one inference image.
-
-    Args:
-        config: Loaded configuration dictionary.
-        class_name: Target ImageNet class.
-        index: Inference image index.
-
-    Returns:
-        Path where the inference image should be saved.
-    """
-    class_dir = Path(config["paths"]["generated_images_dir"]) / slugify(class_name) / "inference"
-    ensure_dir(class_dir)
-    return class_dir / f"sample_{index:03d}.png"
+        with path.open("r", encoding="utf-8") as file:
+            return json.load(file)

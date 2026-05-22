@@ -1,36 +1,40 @@
-"""Command line entry point for TextBack optimization."""
+"""Run TextBack prompt optimization from the command line."""
 
 import argparse
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
+# Make imports work when launching from the project root:
+# python scripts/run_optimization.py --config configs/default.yaml
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.config import load_config
-from src.pipeline import run_optimization
+from src.pipeline import TextBackPipeline
 
 
 def parse_args() -> argparse.Namespace:
     """Parse command line arguments.
 
     Returns:
-        Parsed argparse namespace.
+        Parsed arguments.
     """
-    parser = argparse.ArgumentParser(description="Run TextBack prompt optimization.")
-    parser.add_argument("--config", default="configs/default.yaml", help="Path to YAML config file.")
+    parser = argparse.ArgumentParser(description="Run TextBack optimization.")
+    parser.add_argument("--config", default="configs/default.yaml", help="Path to the YAML config file.")
     return parser.parse_args()
 
 
 def main() -> None:
-    """Load the config and run optimization."""
+    """Load config, create the pipeline, and run optimization."""
     args = parse_args()
     config = load_config(args.config)
-    final_prompts = run_optimization(config)
 
-    print("Optimization finished. Final prompts:")
-    for class_name, prompt in final_prompts.items():
-        print(f"- {class_name}: {prompt}")
+    pipeline = TextBackPipeline(config)
+    final_prompts = pipeline.run_optimization()
+
+    print("Final prompts saved to results/final_prompts.json")
+    for target_class, prompt in final_prompts.items():
+        print(f"- {target_class}: {prompt}")
 
 
 if __name__ == "__main__":

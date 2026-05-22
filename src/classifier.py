@@ -1,133 +1,84 @@
-"""Classifier loading, preprocessing, and prediction helpers.
+"""ImageNet classifier wrappers for TextBack."""
 
-The dry-run implementation uses a mock classifier. A lightweight torchvision
-hook is included so the project can be extended later without changing the
-pipeline code.
-"""
-
-from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Dict, List
 
 
-@dataclass
-class Prediction:
-    """One classifier prediction.
-
-    Attributes:
-        label: Human readable class label.
-        confidence: Confidence score between 0 and 1.
-    """
-
-    label: str
-    confidence: float
-
-
-class BaseClassifier:
-    """Minimal classifier interface used by optimization and inference."""
-
-    def classify(self, image_path: str | Path, target_class: str, top_k: int = 5) -> Dict:
-        """Classify one image and report target-specific metrics.
-
-        Args:
-            image_path: Path to the generated image.
-            target_class: Target ImageNet class.
-            top_k: Number of predictions to return.
-
-        Returns:
-            Dictionary with top predictions, target confidence, and target rank.
-        """
-        raise NotImplementedError
-
-
-class MockClassifier(BaseClassifier):
-    """Deterministic classifier used to test the pipeline without torch."""
+class DummyImageNetClassifier:
+    """Small deterministic classifier used in dry-run mode."""
 
     def __init__(self) -> None:
-        """Create a small list of ImageNet-like labels."""
-        self.background_labels = [
-            "minibus",
-            "moving van",
-            "sports car",
-            "tabby cat",
-            "tennis ball",
-            "lakeside",
-            "traffic light",
-        ]
+        """Create a few distractor labels for readable fake predictions."""
+        self.distractor_labels = ["minibus", "moving van", "tabby cat", "sports car", "traffic light"]
 
-    def classify(self, image_path: str | Path, target_class: str, top_k: int = 5) -> Dict:
-        """Return fake predictions that improve over optimization steps.
+    def predict(self, image_path: str | Path, target_class: str, top_k: int = 5) -> dict:
+        """Return fake ImageNet predictions.
 
         Args:
             image_path: Path to the generated image.
-            target_class: Target ImageNet class.
-            top_k: Number of predictions to return.
+            target_class: Desired ImageNet class.
+            top_k: Number of top predictions to return.
 
         Returns:
-            Dictionary with top-k predictions and target metrics.
+            Dictionary with top-1, top-k, target confidence, and target rank.
         """
-        step = self._step_from_path(image_path)
-        target_confidence = min(0.15 + 0.22 * step, 0.92)
-        distractor_confidence = max(0.80 - 0.18 * step, 0.05)
+        image_index = self._index_from_path(image_path)
+        target_confidence = min(0.18 + 0.22 * image_index, 0.93)
+        distractor_confidence = max(0.82 - 0.18 * image_index, 0.04)
 
-        predictions = [
-            Prediction(self.background_labels[step % len(self.background_labels)], distractor_confidence),
-            Prediction(target_class, target_confidence),
-            Prediction("background", 0.10),
-            Prediction("object", 0.08),
-            Prediction("texture", 0.05),
+        topk = [
+            {"label": self.distractor_labels[image_index % len(self.distractor_labels)], "confidence": distractor_confidence, "index": 0},
+            {"label": target_class, "confidence": target_confidence, "index": 1},
+            {"label": "background", "confidence": 0.08, "index": 2},
+            {"label": "texture", "confidence": 0.05, "index": 3},
+            {"label": "object", "confidence": 0.03, "index": 4},
         ]
-        predictions = sorted(predictions, key=lambda item: item.confidence, reverse=True)
-        predictions = predictions[:top_k]
+        topk = sorted(topk, key=lambda item: item["confidence"], reverse=True)[:top_k]
 
-        target_rank = self._find_target_rank(predictions, target_class)
+        target_rank = self._find_rank(topk, target_class)
         return {
-            "top_predictions": [asdict(prediction) for prediction in predictions],
-            "target_confidence": float(target_confidence),
+            "top1_label": topk[0]["label"],
+            "top1_confidence": topk[0]["confidence"],
+            "topk": topk,
+            "target_confidence": target_confidence,
             "target_rank": target_rank,
         }
 
-    def _step_from_path(self, image_path: str | Path) -> int:
-        """Extract an optimization or inference index from a file name.
+    def _index_from_path(self, image_path: str | Path) -> int:
+        """Extract a numeric index from names like step_002.png.
 
         Args:
-            image_path: Image path such as step_002.png.
+            image_path: Image path.
 
         Returns:
-            Parsed integer index, or 0 if parsing fails.
+            Parsed index or 0 when no number is present.
         """
-        stem = Path(image_path).stem
-        digits = "".join(character for character in stem if character.isdigit())
+        digits = "".join(character for character in Path(image_path).stem if character.isdigit())
         return int(digits) if digits else 0
 
-    def _find_target_rank(self, predictions: List[Prediction], target_class: str) -> int | None:
-        """Find the 1-based target rank in top-k predictions.
+    def _find_rank(self, topk: list[dict], target_class: str) -> int | None:
+        """Find the 1-based rank of the target in a top-k list.
 
         Args:
-            predictions: Ordered prediction objects.
-            target_class: Target ImageNet class.
+            topk: Ordered prediction dictionaries.
+            target_class: Desired class label.
 
         Returns:
-            Rank if the target appears, otherwise None.
+            Rank if present, otherwise None.
         """
-        for index, prediction in enumerate(predictions, start=1):
-            if prediction.label == target_class:
-                return index
+        for rank, prediction in enumerate(topk, start=1):
+            if prediction["label"] == target_class:
+                return rank
         return None
 
 
-class TorchvisionClassifier(BaseClassifier):
-    """Small wrapper around torchvision ResNet50.
+class TorchvisionImageNetClassifier:
+    """Torchvision ResNet50 classifier with ImageNet preprocessing."""
 
-    This class is intentionally lazy: heavy imports happen only when the user
-    requests the real classifier. Dry-run mode does not need torch installed.
-    """
-
-    def __init__(self, config: Dict) -> None:
-        """Load a pretrained torchvision classifier.
+    def __init__(self, device: str = "cpu") -> None:
+        """Load pretrained ResNet50 and its matching preprocessing transform.
 
         Args:
-            config: Loaded configuration dictionary.
+            device: Torch device string, usually "cpu" or "cuda".
         """
         import torch
         from PIL import Image
@@ -135,78 +86,94 @@ class TorchvisionClassifier(BaseClassifier):
 
         self.torch = torch
         self.Image = Image
-        self.device = config.get("project", {}).get("device", "cpu")
-        weights = ResNet50_Weights.DEFAULT
-        self.categories = weights.meta["categories"]
-        self.preprocess = weights.transforms()
-        self.model = resnet50(weights=weights).to(self.device)
+        self.device = device
+
+        # Torchvision weights include the correct resize, crop, normalize steps.
+        self.weights = ResNet50_Weights.DEFAULT
+        self.preprocess = self.weights.transforms()
+        self.labels = self.weights.meta["categories"]
+
+        self.model = resnet50(weights=self.weights).to(self.device)
         self.model.eval()
 
-    def classify(self, image_path: str | Path, target_class: str, top_k: int = 5) -> Dict:
-        """Classify one image with ResNet50.
+    def predict(self, image_path: str | Path, target_class: str, top_k: int = 5) -> dict:
+        """Classify an image and compute target-class metrics.
 
         Args:
-            image_path: Path to the generated image.
-            target_class: Target ImageNet class.
-            top_k: Number of predictions to return.
+            image_path: Path to the input image.
+            target_class: Desired ImageNet label.
+            top_k: Number of top predictions to return.
 
         Returns:
-            Dictionary with top-k predictions and target metrics.
+            Dictionary with top1_label, top1_confidence, topk, target_confidence,
+            and target_rank.  If target_class is not an exact ImageNet label,
+            target_confidence is 0 and target_rank is None.
         """
         image = self.Image.open(image_path).convert("RGB")
-        tensor = self.preprocess(image).unsqueeze(0).to(self.device)
+        input_tensor = self.preprocess(image).unsqueeze(0).to(self.device)
 
         with self.torch.no_grad():
-            logits = self.model(tensor)
+            logits = self.model(input_tensor)
             probabilities = self.torch.softmax(logits, dim=1)[0]
 
         top_values, top_indices = probabilities.topk(top_k)
-        top_predictions = []
-        for value, index in zip(top_values.tolist(), top_indices.tolist()):
-            top_predictions.append({"label": self.categories[index], "confidence": float(value)})
+        topk = []
+        for confidence, index in zip(top_values.tolist(), top_indices.tolist()):
+            topk.append(
+                {
+                    "label": self.labels[index],
+                    "confidence": float(confidence),
+                    "index": int(index),
+                }
+            )
 
         target_confidence, target_rank = self._target_metrics(probabilities, target_class)
         return {
-            "top_predictions": top_predictions,
+            "top1_label": topk[0]["label"],
+            "top1_confidence": topk[0]["confidence"],
+            "topk": topk,
             "target_confidence": target_confidence,
             "target_rank": target_rank,
         }
 
     def _target_metrics(self, probabilities, target_class: str) -> tuple[float, int | None]:
-        """Compute confidence and rank for the target class.
+        """Compute confidence and rank for an exact ImageNet label.
 
         Args:
-            probabilities: Torch tensor with ImageNet probabilities.
-            target_class: Human readable target class.
+            probabilities: Tensor of ImageNet probabilities.
+            target_class: Desired ImageNet label.
 
         Returns:
-            Target confidence and 1-based rank, if the class is known.
+            Target confidence and rank, or (0.0, None) if the label is unknown.
         """
-        if target_class not in self.categories:
+        if target_class not in self.labels:
             return 0.0, None
 
-        target_index = self.categories.index(target_class)
+        target_index = self.labels.index(target_class)
         target_confidence = float(probabilities[target_index].item())
         sorted_indices = probabilities.argsort(descending=True).tolist()
-        return target_confidence, sorted_indices.index(target_index) + 1
+        target_rank = sorted_indices.index(target_index) + 1
+        return target_confidence, target_rank
 
 
-def build_classifier(config: Dict) -> BaseClassifier:
-    """Create the classifier requested by the config.
+def build_classifier(config: dict):
+    """Create the classifier selected by the config.
 
     Args:
-        config: Loaded configuration dictionary.
+        config: Loaded project configuration.
 
     Returns:
-        A classifier object.
+        A classifier object with a predict() method.
     """
+    dry_run = bool(config.get("project", {}).get("dry_run", True))
     provider = config.get("classifier", {}).get("provider", "mock")
-    dry_run = config.get("project", {}).get("dry_run", True)
 
-    if dry_run or provider == "mock":
-        return MockClassifier()
+    if dry_run or provider in {"mock", "dummy"}:
+        return DummyImageNetClassifier()
+
     if provider == "torchvision":
-        return TorchvisionClassifier(config)
+        device = config.get("project", {}).get("device", "cpu")
+        return TorchvisionImageNetClassifier(device=device)
 
-    print("Unknown classifier provider; falling back to mock classifier.")
-    return MockClassifier()
+    print("Unknown classifier provider. Falling back to dummy classifier.")
+    return DummyImageNetClassifier()

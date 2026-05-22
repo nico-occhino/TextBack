@@ -1,32 +1,37 @@
 """Configuration helpers for TextBack.
 
-The project uses one YAML file to keep experiments easy to change during an
-oral exam. This module intentionally stays small: load the YAML, create output
-folders, and return a normal Python dictionary.
+The project is driven by one YAML file.  The functions here stay intentionally
+small so they are easy to explain and edit during an oral exam.
 """
 
 from pathlib import Path
-from typing import Any, Dict
-
-import yaml
+from typing import Any
 
 
-def load_config(config_path: str) -> Dict[str, Any]:
-    """Load a YAML config file.
+def load_config(config_path: str | Path) -> dict[str, Any]:
+    """Load a YAML configuration file and return a plain dictionary.
 
     Args:
-        config_path: Path to a YAML configuration file.
+        config_path: Path to the YAML config file.
 
     Returns:
-        A nested dictionary with all configuration values.
+        Configuration values as nested Python dictionaries.
     """
-    with open(config_path, "r", encoding="utf-8") as file:
-        config = yaml.safe_load(file)
-    return config
+    config_path = Path(config_path)
+    text = config_path.read_text(encoding="utf-8")
+
+    try:
+        import yaml
+
+        return yaml.safe_load(text)
+    except ModuleNotFoundError:
+        # Small fallback for the simple default config.  Installing PyYAML is
+        # still recommended, but this keeps the dry run usable on bare Python.
+        return _parse_simple_yaml(text)
 
 
-def prepare_output_dirs(config: Dict[str, Any]) -> None:
-    """Create result folders used by the pipeline.
+def create_output_dirs(config: dict[str, Any]) -> None:
+    """Create the output directories used by optimization and inference.
 
     Args:
         config: Loaded configuration dictionary.
@@ -36,13 +41,73 @@ def prepare_output_dirs(config: Dict[str, Any]) -> None:
     Path(paths["generated_images_dir"]).mkdir(parents=True, exist_ok=True)
 
 
-def is_dry_run(config: Dict[str, Any]) -> bool:
-    """Return whether the experiment should use dummy components.
+def _parse_simple_yaml(text: str) -> dict[str, Any]:
+    """Parse the small subset of YAML used by configs/default.yaml.
 
     Args:
-        config: Loaded configuration dictionary.
+        text: Raw YAML text.
 
     Returns:
-        True when dummy components should be preferred.
+        Nested dictionary with strings, numbers, booleans, and simple lists.
     """
-    return bool(config.get("project", {}).get("dry_run", True))
+    result: dict[str, Any] = {}
+    current_section: str | None = None
+    current_list_key: str | None = None
+
+    for raw_line in text.splitlines():
+        line = raw_line.rstrip()
+        stripped = line.strip()
+
+        if not stripped or stripped.startswith("#"):
+            continue
+
+        if not line.startswith(" ") and stripped.endswith(":"):
+            current_section = stripped[:-1]
+            current_list_key = None
+            result[current_section] = {}
+            continue
+
+        if current_section is None:
+            continue
+
+        if stripped.startswith("- ") and current_list_key is not None:
+            result[current_section][current_list_key].append(_parse_scalar(stripped[2:]))
+            continue
+
+        if ":" in stripped:
+            key, value = stripped.split(":", 1)
+            key = key.strip()
+            value = value.strip()
+
+            if value == "":
+                result[current_section][key] = []
+                current_list_key = key
+            else:
+                result[current_section][key] = _parse_scalar(value)
+                current_list_key = None
+
+    return result
+
+
+def _parse_scalar(value: str) -> Any:
+    """Convert one simple YAML scalar into a Python value.
+
+    Args:
+        value: Raw scalar text.
+
+    Returns:
+        Parsed Python value.
+    """
+    value = value.strip().strip('"').strip("'")
+
+    if value.lower() == "true":
+        return True
+    if value.lower() == "false":
+        return False
+
+    try:
+        if "." in value:
+            return float(value)
+        return int(value)
+    except ValueError:
+        return value
