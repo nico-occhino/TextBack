@@ -60,6 +60,38 @@ python scripts/list_imagenet_classes.py --query bus
 python scripts/list_imagenet_classes.py --query dog
 ```
 
+## Real ImageNet Subset
+
+Torchvision provides pretrained model weights, but it does not automatically
+download the ImageNet / ILSVRC2012 dataset.  You must manually obtain ImageNet
+or create a small subset yourself.
+
+For Project 17, prepare a subset such as 5 classes x 50 real images:
+
+```text
+data/imagenet_subset/
+  school bus/
+    img001.JPEG
+    img002.JPEG
+  golden retriever/
+    img001.JPEG
+```
+
+The folder names are used as target labels, so they should match torchvision
+ImageNet class names exactly.  Use `scripts/list_imagenet_classes.py` to check
+the labels before naming folders.
+
+Evaluate the real subset:
+
+```bash
+python scripts/evaluate_real_subset.py --config configs/default.yaml
+```
+
+This writes:
+
+- `results/real_subset_predictions.csv`
+- `results/real_subset_summary.csv`
+
 ## Main Files
 
 ```text
@@ -72,4 +104,5 @@ src/pipeline.py               optimization and inference orchestration
 scripts/run_optimization.py   optimization entry point
 scripts/run_inference.py      inference entry point
 scripts/check_environment.py  dependency and key checker
+scripts/evaluate_real_subset.py real ImageNet subset evaluation
 ```
