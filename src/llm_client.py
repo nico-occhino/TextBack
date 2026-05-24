@@ -83,7 +83,9 @@ class DummyLLMClient:
         else:
             update = f"Make it less like {top1_label} and more clearly like {target_class}."
 
+        # Keep the custom backend compact.  Stable Diffusion uses a short CLIP
+        # context, so repeatedly appending corrections quickly becomes wasteful.
         return (
-            f"{current_prompt} {update} "
-            f"Use a plain background and avoid distracting context."
+            f"A clear ImageNet-style photo of a {target_class}, centered, "
+            f"well lit, sharp focus. {update} Plain background."
         )

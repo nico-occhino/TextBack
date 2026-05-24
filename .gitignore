@@ -1,31 +1,18 @@
-# Windows system files
-desktop.ini
-Thumbs.db
-ehthumbs.db
-
-# macOS system files
-.DS_Store
-
-# Python
-__pycache__/
-*.py[cod]
-*.pyo
-*.pyd
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-
-# Virtual environments
-.venv/
-venv/
-env/
-
-# Environment variables / secrets
 .env
 .env.*
+!.env.example
+desktop.ini
+Thumbs.db
+.DS_Store
 
-# Project generated outputs
-results/
+__pycache__/
+*.pyc
+.venv/
+
+results/generated_images/
+results/*.csv
+results/*.json
+results/*.jsonl
+
 data/imagenet/
-data/imagenet-1k/
-*.log
+data/imagenet_subset/

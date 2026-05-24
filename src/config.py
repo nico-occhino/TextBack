@@ -23,11 +23,42 @@ def load_config(config_path: str | Path) -> dict[str, Any]:
     try:
         import yaml
 
-        return yaml.safe_load(text)
+        config = yaml.safe_load(text)
     except ModuleNotFoundError:
         # Small fallback for the simple default config.  Installing PyYAML is
         # still recommended, but this keeps the dry run usable on bare Python.
-        return _parse_simple_yaml(text)
+        config = _parse_simple_yaml(text)
+
+    validate_config(config)
+    return config
+
+
+def validate_config(config: dict) -> None:
+    """Check that the config contains all required top-level sections.
+
+    Args:
+        config: Loaded configuration dictionary.
+
+    Raises:
+        ValueError: If a required section is missing.
+    """
+    required_sections = [
+        "project",
+        "paths",
+        "experiment",
+        "llm",
+        "image_generator",
+        "classifier",
+    ]
+
+    # Fail early with a clear message. This is easier to debug during an exam
+    # than getting a KeyError later inside the pipeline.
+    found_sections = list(config.keys()) if isinstance(config, dict) else []
+    for section in required_sections:
+        if section not in found_sections:
+            raise ValueError(
+                f"Missing config section: {section}. Found sections: {found_sections}"
+            )
 
 
 def create_output_dirs(config: dict[str, Any]) -> None:

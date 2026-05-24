@@ -55,11 +55,18 @@ class TextBackPipeline:
         self.config = config
         self.paths = config["paths"]
         self.experiment = config["experiment"]
+        self.optimizer_backend = config.get("textual_optimizer", {}).get("backend", "custom")
 
         create_output_dirs(config)
         set_seed(int(config.get("project", {}).get("seed", 42)))
 
         self.llm_client = DummyLLMClient()
+        self.textgrad_optimizer = None
+        if self.optimizer_backend == "textgrad":
+            from src.textgrad_optimizer import TextGradPromptOptimizer
+
+            self.textgrad_optimizer = TextGradPromptOptimizer(config)
+
         self.image_generator = build_image_generator(config)
         self.classifier = build_classifier(config)
         self.textual_optimizer = TextualBackwardOptimizer(
@@ -78,41 +85,101 @@ class TextBackPipeline:
 
         for target_class in self.experiment["target_classes"]:
             print(f"Optimizing prompt for: {target_class}")
-            prompt = self.textual_optimizer.initial_prompt(target_class)
-
-            for iteration in range(int(self.experiment["n_optimization_steps"])):
-                image_path = self._optimization_image_path(target_class, iteration)
-
-                # Forward pass: prompt -> image -> classifier prediction.
-                self.image_generator.generate(prompt, image_path)
-                classifier_result = self.classifier.predict(
-                    image_path=image_path,
-                    target_class=target_class,
-                    top_k=int(self.experiment.get("top_k", 5)),
-                )
-
-                # Backward/update signal: classifier result -> textual loss.
-                textual_loss = self.textual_optimizer.textual_loss(
-                    target_class,
-                    prompt,
-                    classifier_result,
-                )
-
-                self._log_optimization_step(
-                    target_class,
-                    iteration,
-                    prompt,
-                    textual_loss,
-                    image_path,
-                    classifier_result,
-                )
-
-                prompt = self.textual_optimizer.refine(target_class, prompt, classifier_result)
-
-            final_prompts[target_class] = prompt
+            if self.optimizer_backend == "textgrad":
+                final_prompts[target_class] = self._run_textgrad_optimization_for_class(target_class)
+            else:
+                final_prompts[target_class] = self._run_custom_optimization_for_class(target_class)
 
         self._save_final_prompts(final_prompts)
         return final_prompts
+
+    def _run_textgrad_optimization_for_class(self, target_class: str) -> str:
+        """Optimize one class prompt with the official TextGrad backend.
+
+        Args:
+            target_class: Desired ImageNet class.
+
+        Returns:
+            Final optimized prompt.
+        """
+        initial_prompt = (
+            f"A realistic ImageNet-style photo of a {target_class}, "
+            "centered, well lit, sharp focus."
+        )
+        prompt_variable = self.textgrad_optimizer.make_prompt_variable(initial_prompt, target_class)
+        updated_prompt = self._textgrad_value(prompt_variable)
+
+        for iteration in range(int(self.experiment["n_optimization_steps"])):
+            prompt = self._textgrad_value(prompt_variable)
+            image_path = self._optimization_image_path(target_class, iteration)
+
+            # Forward pass: TextGrad prompt -> image -> classifier feedback.
+            self.image_generator.generate(prompt, image_path)
+            classifier_result = self.classifier.predict(
+                image_path=image_path,
+                target_class=target_class,
+                top_k=int(self.experiment.get("top_k", 5)),
+            )
+
+            # TextGrad backward pass: feedback -> TextLoss -> gradients -> TGD update.
+            updated_prompt, textual_loss = self.textgrad_optimizer.step(
+                prompt_variable,
+                target_class,
+                classifier_result,
+            )
+
+            self._log_optimization_step(
+                target_class,
+                iteration,
+                prompt,
+                textual_loss,
+                image_path,
+                classifier_result,
+            )
+
+        return updated_prompt
+
+    def _run_custom_optimization_for_class(self, target_class: str) -> str:
+        """Optimize one class prompt with the old custom backend.
+
+        Args:
+            target_class: Desired ImageNet class.
+
+        Returns:
+            Final optimized prompt.
+        """
+        prompt = self.textual_optimizer.initial_prompt(target_class)
+
+        for iteration in range(int(self.experiment["n_optimization_steps"])):
+            image_path = self._optimization_image_path(target_class, iteration)
+
+            # Forward pass: prompt -> image -> classifier prediction.
+            self.image_generator.generate(prompt, image_path)
+            classifier_result = self.classifier.predict(
+                image_path=image_path,
+                target_class=target_class,
+                top_k=int(self.experiment.get("top_k", 5)),
+            )
+
+            # Backward/update signal: classifier result -> textual loss.
+            textual_loss = self.textual_optimizer.textual_loss(
+                target_class,
+                prompt,
+                classifier_result,
+            )
+
+            self._log_optimization_step(
+                target_class,
+                iteration,
+                prompt,
+                textual_loss,
+                image_path,
+                classifier_result,
+            )
+
+            prompt = self.textual_optimizer.refine(target_class, prompt, classifier_result)
+
+        return prompt
 
     def run_inference(self) -> dict[str, float]:
         """Evaluate final prompts with multiple generated images.
@@ -279,3 +346,11 @@ class TextBackPipeline:
 
         with path.open("r", encoding="utf-8") as file:
             return json.load(file)
+
+    def _textgrad_value(self, variable) -> str:
+        """Read a TextGrad variable value across TextGrad versions."""
+        if hasattr(variable, "value"):
+            return str(variable.value)
+        if hasattr(variable, "get_value"):
+            return str(variable.get_value())
+        return str(variable)

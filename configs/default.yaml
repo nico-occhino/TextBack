@@ -1,8 +1,8 @@
 project:
   name: "TextBack"
   seed: 42
-  device: "cpu"
-  dry_run: true
+  device: "cuda"
+  dry_run: false
 
 paths:
   prompts_dir: "prompts"
@@ -10,32 +10,45 @@ paths:
   generated_images_dir: "results/generated_images"
   logs_dir: "results/logs"
   imagenet_root: "data/imagenet"
+  imagenet_subset_root: "data/imagenet_subset"
 
 experiment:
   target_classes:
     - "school bus"
-    - "golden retriever"
-  n_optimization_steps: 3
-  n_inference_images: 5
+  n_optimization_steps: 1
+  n_inference_images: 1
   top_k: 5
   save_intermediate_artifacts: true
-  save_only_final_inference_images: true
+  save_only_final_inference_images: false
+
+textual_optimizer:
+  backend: "textgrad"
+  objective_mode: "prototype"
+
+textgrad:
+  backward_engine: "experimental:gemini/gemini-3.5-flash"
+  cache: true
 
 llm:
-  provider: "dummy"
-  model_name: "dummy-llm"
+  provider: "gemini"
+  model_name: "gemini-3.5-flash"
 
 image_generator:
-  provider: "dummy"
+  provider: "diffusers"
   model_name: "runwayml/stable-diffusion-v1-5"
-  height: 512
-  width: 512
-  num_inference_steps: 20
+  height: 384
+  width: 384
+  num_inference_steps: 10
   guidance_scale: 7.5
   use_float16: true
+  force_float32: false
+  enable_attention_slicing: true
+  enable_cpu_offload: false
+  disable_safety_checker: true
+  draw_text_on_dummy_image: false
 
 classifier:
-  provider: "mock"
+  provider: "torchvision"
   model_name: "resnet50"
   weights: "IMAGENET1K_V2"
   robust_model: false
