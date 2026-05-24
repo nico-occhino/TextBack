@@ -7,21 +7,16 @@ TextGrad API with a LiteLLM backward engine configured from YAML.
 import os
 
 
-def clean_prompt(prompt: str, max_words: int = 65) -> str:
-    """Normalize and shorten an image-generation prompt.
+def clean_prompt(prompt: str) -> str:
+    """Normalize an image-generation prompt without shortening it.
 
     Args:
         prompt: Raw prompt text returned by TextGrad or another LLM.
-        max_words: Maximum number of words to keep.
 
     Returns:
-        Prompt with whitespace cleaned and at most max_words words.
+        Prompt with whitespace cleaned.
     """
-    cleaned = " ".join(prompt.strip().replace("\n", " ").split())
-    words = cleaned.split()
-    if len(words) > max_words:
-        cleaned = " ".join(words[:max_words])
-    return cleaned
+    return " ".join(prompt.strip().replace("\n", " ").split())
 
 
 class TextGradPromptOptimizer:
@@ -36,7 +31,6 @@ class TextGradPromptOptimizer:
         self._load_env_file()
         self.backward_engine = config["textgrad"]["backward_engine"]
         self.cache = bool(config["textgrad"].get("cache", True))
-        self.objective_mode = config.get("textual_optimizer", {}).get("objective_mode", "prototype")
         self._check_api_key()
 
         import textgrad as tg
@@ -85,22 +79,8 @@ class TextGradPromptOptimizer:
                 f"({prediction['confidence']:.4f})"
             )
 
-        if self.objective_mode == "shortcut":
-            objective_text = (
-                "Objective mode: shortcut. The prompt must NOT mention the "
-                "target object or direct object parts. Search for contextual, "
-                "background, texture, color, lighting, and co-occurrence cues "
-                "that may spuriously activate the classifier."
-            )
-        else:
-            objective_text = (
-                "Objective mode: prototype. The prompt may mention the target "
-                "object. Make the generated image more recognizable as the "
-                "target ImageNet class."
-            )
-
         return (
-            "You are optimizing a text-to-image prompt using classifier feedback.\n"
+            "You are optimizing a text-to-image prompt for shortcut discovery.\n"
             f"Target class: {target_class}\n"
             f"Top-1 prediction: {classifier_result['top1_label']} "
             f"with confidence {classifier_result['top1_confidence']:.4f}\n"
@@ -108,12 +88,10 @@ class TextGradPromptOptimizer:
             f"Target rank: {classifier_result['target_rank']}\n"
             "Top-k predictions:\n"
             + "\n".join(topk_lines)
-            + "\n"
-            + objective_text
-            + "\nProvide concise directional criticism of the current prompt. "
-            "Do not write a full essay.\n"
-            "Return a final prompt shorter than 65 words.\n"
-            "Do not append repetitive corrections.\n"
+            + "\nThe improved image-generation prompt must NOT mention the target class, "
+            "direct object names, or direct object parts. Search for indirect shortcut "
+            "cues: background, texture, color, lighting, scene context, co-occurring "
+            "objects, shapes, and materials that may spuriously activate the classifier. "
             "Return only the improved image-generation prompt."
         )
 

@@ -1,43 +1,59 @@
-"""Torchvision ImageNet classifier used by TextBack."""
+"""RobustBench ImageNet classifier used by TextBack."""
 
 from pathlib import Path
 
 
-class TorchvisionImageNetClassifier:
-    """ResNet50 classifier with official ImageNet preprocessing."""
+class RobustBenchImageNetClassifier:
+    """Robust ImageNet ResNet-50 loaded from RobustBench."""
 
-    def __init__(self, device: str = "cpu") -> None:
-        """Load pretrained ResNet50 and its matching transforms.
+    def __init__(self, model_name: str, dataset: str, threat_model: str, device: str) -> None:
+        """Load the robust classifier and ImageNet preprocessing.
 
         Args:
-            device: Torch device string, usually "cpu" or "cuda".
+            model_name: RobustBench model name, e.g. Salman2020Do_R50.
+            dataset: RobustBench dataset name, here "imagenet".
+            threat_model: RobustBench threat model, here "Linf".
+            device: Torch device string.
+
+        Raises:
+            RuntimeError: If RobustBench imports or model loading fail.
         """
-        import torch
-        from PIL import Image
-        from torchvision.models import ResNet50_Weights, resnet50
+        try:
+            import torch
+            from PIL import Image
+            from robustbench.utils import load_model
+            from torchvision.models import ResNet50_Weights
 
-        self.torch = torch
-        self.Image = Image
-        self.device = device
+            self.torch = torch
+            self.Image = Image
+            self.device = device
 
-        self.weights = ResNet50_Weights.DEFAULT
-        self.preprocess = self.weights.transforms()
-        self.labels = self.weights.meta["categories"]
+            weights = ResNet50_Weights.DEFAULT
+            self.preprocess = weights.transforms()
+            self.labels = weights.meta["categories"]
 
-        self.model = resnet50(weights=self.weights).to(self.device)
-        self.model.eval()
+            self.model = load_model(
+                model_name=model_name,
+                dataset=dataset,
+                threat_model=threat_model,
+            ).to(device)
+            self.model.eval()
+        except Exception as error:
+            raise RuntimeError(
+                f"Could not load RobustBench model {model_name}. "
+                "Check robustbench installation and model download."
+            ) from error
 
     def predict(self, image_path: str | Path, target_class: str, top_k: int = 5) -> dict:
-        """Classify one image and compute target-class metrics.
+        """Classify one image and return TextBack metrics.
 
         Args:
             image_path: Path to the image.
-            target_class: Exact ImageNet label we want to activate.
+            target_class: Exact ImageNet label.
             top_k: Number of top predictions to return.
 
         Returns:
             Dictionary with top-1, top-k, target confidence, and target rank.
-            If target_class is not an exact ImageNet label, target rank is None.
         """
         image = self.Image.open(image_path).convert("RGB")
         input_tensor = self.preprocess(image).unsqueeze(0).to(self.device)
@@ -67,39 +83,36 @@ class TorchvisionImageNetClassifier:
         }
 
     def _target_metrics(self, probabilities, target_class: str) -> tuple[float, int | None]:
-        """Compute confidence and rank for an exact ImageNet label.
-
-        Args:
-            probabilities: Tensor of ImageNet probabilities.
-            target_class: Exact target label.
-
-        Returns:
-            Target confidence and 1-based rank, or (0.0, None) if unknown.
-        """
+        """Compute confidence and 1-based rank for the target class."""
         if target_class not in self.labels:
             return 0.0, None
 
         target_index = self.labels.index(target_class)
         target_confidence = float(probabilities[target_index].item())
-        sorted_indices = probabilities.argsort(descending=True).tolist()
+        sorted_indices = self.torch.argsort(probabilities, descending=True).tolist()
         return target_confidence, sorted_indices.index(target_index) + 1
 
 
-def build_classifier(config: dict) -> TorchvisionImageNetClassifier:
-    """Create the configured classifier.
+def build_classifier(config: dict) -> RobustBenchImageNetClassifier:
+    """Build the final RobustBench classifier.
 
     Args:
-        config: Loaded project configuration.
+        config: Loaded configuration dictionary.
 
     Returns:
-        TorchvisionImageNetClassifier instance.
+        RobustBenchImageNetClassifier instance.
 
     Raises:
-        ValueError: If classifier.provider is not "torchvision".
+        ValueError: If classifier.provider is not robustbench.
     """
-    provider = config.get("classifier", {}).get("provider")
-    if provider != "torchvision":
-        raise ValueError(f"Unsupported classifier provider: {provider}. Use 'torchvision'.")
+    classifier_config = config["classifier"]
+    provider = classifier_config.get("provider")
+    if provider != "robustbench":
+        raise ValueError("Final project requires classifier.provider='robustbench'.")
 
-    device = config.get("project", {}).get("device", "cpu")
-    return TorchvisionImageNetClassifier(device=device)
+    return RobustBenchImageNetClassifier(
+        model_name=classifier_config["model_name"],
+        dataset=classifier_config["dataset"],
+        threat_model=classifier_config["threat_model"],
+        device=config["project"].get("device", "cpu"),
+    )

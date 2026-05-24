@@ -19,16 +19,12 @@ experiment:
     - "cowboy hat"
     - "volcano"
     - "book jacket"
-  n_optimization_steps: 2
+  n_optimization_steps: 1
   n_inference_images: 5
   top_k: 5
 
 textual_optimizer:
   backend: "textgrad"
-  # objective_mode options:
-  # - "prototype": optimize prompts that directly show the target object.
-  # - "shortcut": search for contextual cues without naming the target object.
-  objective_mode: "prototype"
 
 textgrad:
   backward_engine: "experimental:groq/openai/gpt-oss-20b"
@@ -48,8 +44,8 @@ image_generator:
   disable_safety_checker: true
 
 classifier:
-  provider: "torchvision"
-  model_name: "resnet50"
-  weights: "IMAGENET1K_V2"
-  robust_model: false
+  provider: "robustbench"
+  model_name: "Salman2020Do_R50"
+  threat_model: "Linf"
+  dataset: "imagenet"
   image_size: 224

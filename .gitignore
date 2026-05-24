@@ -16,3 +16,12 @@ results/*.jsonl
 
 data/imagenet/
 data/imagenet_subset/
+
+# Block model checkpoints
+models/
+*.pt
+*.pth
+
+# Block tracking run-logs
+logs/
+*.jsonl

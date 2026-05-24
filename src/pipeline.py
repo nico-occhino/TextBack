@@ -87,10 +87,7 @@ class TextBackPipeline:
         Returns:
             Final optimized prompt.
         """
-        initial_prompt = (
-            f"A realistic ImageNet-style photo of a {target_class}, "
-            "centered, well lit, sharp focus."
-        )
+        initial_prompt = self._make_initial_prompt(target_class)
         prompt_variable = self.textgrad_optimizer.make_prompt_variable(initial_prompt, target_class)
         updated_prompt = self._textgrad_value(prompt_variable)
 
@@ -121,6 +118,22 @@ class TextBackPipeline:
             )
 
         return updated_prompt
+
+    def _make_initial_prompt(self, target_class: str) -> str:
+        """Create a shortcut-search prompt that does not name the target class.
+
+        Args:
+            target_class: Hidden classifier target, not included in the prompt.
+
+        Returns:
+            Initial image-generation prompt.
+        """
+        return (
+            "A realistic photographic scene containing indirect visual cues such as "
+            "textures, colors, lighting, backgrounds, and contextual patterns that "
+            "may be statistically associated with the hidden target category, without "
+            "showing or naming the target object."
+        )
 
     def run_inference(self) -> dict[str, float]:
         """Generate images from final prompts and evaluate activation rate.

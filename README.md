@@ -1,91 +1,98 @@
 # TextBack
 
-TextBack is an Advanced Deep Learning exam project for probing spurious visual
-features in ImageNet classifiers.  The final pipeline uses the official
-TextGrad library, Groq/LiteLLM as the recommended TextGrad backward engine,
-local Diffusers image generation, and Torchvision ResNet50.
+TextBack is an Advanced Deep Learning oral exam project for **Project 17:
+Textual Backward**.  The goal is to find shortcut cues and spurious visual
+features that activate a robust pretrained ImageNet classifier.
 
-The optimization loop is:
+This final version is **shortcut-only**.  The image-generation prompt must not
+directly name the target class.  The target class is used only inside the
+TextGrad textual loss and the classifier feedback.
+
+## Final Pipeline
 
 ```text
 TextGrad prompt variable
-  -> Diffusers generated image
-  -> ResNet50 ImageNet prediction
+  -> local Diffusers image generation
+  -> RobustBench Salman2020Do_R50 ImageNet classifier
   -> TextGrad TextLoss from classifier feedback
   -> loss.backward()
-  -> TextGrad TGD step
-  -> updated prompt
+  -> TextGrad TGD optimizer.step()
+  -> updated shortcut prompt
 ```
 
-The default config keeps the run small enough for iterative testing before
-launching larger experiments.
+The final visual classifier is `Salman2020Do_R50` from RobustBench.  This is a
+robust ImageNet ResNet-50 model.  Torchvision ResNet50 is no longer the final
+classifier for this project.
 
-## Environment
+## RobustBench Install
 
-Create a local `.env` file from the example:
+Install RobustBench with:
 
 ```bash
-copy .env.example .env
+pip install "setuptools<81"
+pip install "gdown>=5.2.0"
+pip install git+https://github.com/RobustBench/robustbench.git
 ```
 
-Then edit `.env`:
+If RobustBench installation or model loading fails, the project environment is
+not ready for the final classifier.
+
+## API Key
+
+Create `.env` manually from `.env.example` and add your Groq key:
 
 ```text
-GROQ_API_KEY=your_real_groq_key_here
+GROQ_API_KEY=your_real_key_here
 ```
 
-The recommended TextGrad backend is:
+Never commit real API keys.  ChatGPT Plus does not include API usage; API keys
+and billing are separate.
 
-```text
-experimental:groq/qwen/qwen3-32b
-```
-
-A cheaper alternative to try is:
+The working TextGrad backend in the default config is:
 
 ```text
 experimental:groq/openai/gpt-oss-20b
 ```
 
-Gemini can still be used by changing `textgrad.backward_engine` in
-`configs/default.yaml` and setting `GEMINI_API_KEY` or `GOOGLE_API_KEY`.
-ChatGPT Plus does not include API usage; API keys and billing are separate.
-
-Check the environment:
+## Environment Check
 
 ```bash
 python scripts/check_environment.py
 ```
 
+This checks Python, torch/CUDA, Groq key presence, TextGrad, Diffusers, and
+RobustBench.
+
 ## ImageNet Labels
 
-Target classes must match Torchvision ImageNet labels exactly.  Search labels
-with:
+Target classes and subset folder names must match Torchvision ImageNet labels
+exactly:
 
 ```bash
 python scripts/list_imagenet_classes.py --query bus
 ```
 
-## Manual ImageNet Subset
+## Real ImageNet Subset
 
-Torchvision downloads pretrained model weights, but it does not download the
-ImageNet / ILSVRC2012 dataset.  ImageNet must be obtained manually, or a small
-subset must be created by hand.
+Torchvision can download model weights, but it does **not** automatically
+download ImageNet / ILSVRC2012.  The real 5x50 subset is a baseline for
+evaluation only, not training.
 
-For the project evaluation, use a folder like:
-
-```text
-data/imagenet_subset/
-  school bus/
-    img001.JPEG
-    img002.JPEG
-  golden retriever/
-    img001.JPEG
-```
-
-The folder name is treated as the exact target label:
+Expected structure:
 
 ```text
 data/imagenet_subset/<exact ImageNet label>/*.jpg
+data/imagenet_subset/<exact ImageNet label>/*.png
+```
+
+Example:
+
+```text
+data/imagenet_subset/
+  tabby/
+    001.png
+  sports car/
+    001.png
 ```
 
 Evaluate the real subset:
@@ -94,18 +101,15 @@ Evaluate the real subset:
 python scripts/evaluate_real_subset.py --config configs/default.yaml
 ```
 
-This writes `results/real_subset_predictions.csv` and
-`results/real_subset_summary.csv`.
-
 ## TextBack Runs
 
-Run one tiny optimization:
+Run prompt optimization:
 
 ```bash
 python scripts/run_optimization.py --config configs/default.yaml
 ```
 
-Run inference from the final prompt:
+Run inference from the final prompts:
 
 ```bash
 python scripts/run_inference.py --config configs/default.yaml
@@ -117,14 +121,13 @@ Outputs are written under `results/`.
 
 ```text
 configs/default.yaml             experiment settings
-src/config.py                    YAML loading and validation
-src/classifier.py                Torchvision ResNet50 ImageNet classifier
-src/image_generator.py           Diffusers generator and dev dummy generator
-src/textgrad_optimizer.py        TextGrad prompt optimization
+src/classifier.py                RobustBench Salman2020Do_R50 classifier
+src/image_generator.py           Diffusers generator
+src/textgrad_optimizer.py        TextGrad shortcut prompt optimization
 src/pipeline.py                  optimization and inference orchestration
 scripts/check_environment.py     dependency and key checker
 scripts/list_imagenet_classes.py ImageNet label lookup
-scripts/evaluate_real_subset.py  real ImageNet subset evaluation
+scripts/evaluate_real_subset.py  real ImageNet subset baseline evaluation
 scripts/run_optimization.py      TextBack optimization entry point
 scripts/run_inference.py         TextBack inference entry point
 ```
