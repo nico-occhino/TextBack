@@ -38,6 +38,14 @@ def main() -> None:
     print(f"Gemini API key present: {has_gemini_key}")
 
     try:
+        import robustbench  # noqa: F401
+        from robustbench.utils import load_model  # noqa: F401
+
+        print("robustbench import: ok")
+    except Exception as error:
+        print(f"robustbench import: failed - final classifier will not run ({error})")
+
+    try:
         import textgrad  # noqa: F401
 
         print("textgrad import: ok")
@@ -50,14 +58,6 @@ def main() -> None:
         print("diffusers import: ok")
     except ImportError:
         print("diffusers import: failed")
-
-    try:
-        import robustbench  # noqa: F401
-        from robustbench.utils import load_model  # noqa: F401
-
-        print("robustbench import: ok")
-    except Exception as error:
-        print(f"robustbench import: failed - final classifier will not run ({error})")
 
 
 if __name__ == "__main__":

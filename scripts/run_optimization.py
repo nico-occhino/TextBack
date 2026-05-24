@@ -30,7 +30,11 @@ def main() -> None:
     config = load_config(args.config)
 
     pipeline = TextBackPipeline(config)
-    final_prompts = pipeline.run_optimization()
+    try:
+        final_prompts = pipeline.run_optimization()
+    except RuntimeError as error:
+        print(str(error))
+        return
 
     print("Final prompts saved to results/final_prompts.json")
     for target_class, prompt in final_prompts.items():

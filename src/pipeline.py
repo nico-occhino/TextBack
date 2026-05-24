@@ -21,6 +21,7 @@ OPTIMIZATION_COLUMNS = [
     "iteration",
     "prompt",
     "textual_loss",
+    "seed",
     "image_path",
     "top1_label",
     "top1_confidence",
@@ -33,6 +34,7 @@ INFERENCE_COLUMNS = [
     "target_class",
     "image_index",
     "prompt",
+    "seed",
     "image_path",
     "top1_label",
     "top1_confidence",
@@ -58,9 +60,11 @@ class TextBackPipeline:
         create_output_dirs(config)
         set_seed(int(config["project"].get("seed", 42)))
 
-        self.textgrad_optimizer = TextGradPromptOptimizer(config)
-        self.image_generator = build_image_generator(config)
+        # Load RobustBench before TextGrad/LiteLLM to avoid a gdown/importlib
+        # metadata issue observed on Windows.
         self.classifier = build_classifier(config)
+        self.image_generator = build_image_generator(config)
+        self.textgrad_optimizer = TextGradPromptOptimizer(config)
 
     def run_optimization(self) -> dict[str, str]:
         """Optimize prompts for all configured target classes.
@@ -73,7 +77,13 @@ class TextBackPipeline:
 
         for target_class in self.experiment["target_classes"]:
             print(f"Optimizing prompt for: {target_class}")
-            final_prompts[target_class] = self._optimize_one_class(target_class)
+            try:
+                final_prompts[target_class] = self._optimize_one_class(target_class)
+                self._save_final_prompts(final_prompts)
+            except RuntimeError:
+                self._save_final_prompts(final_prompts)
+                print("Stopping optimization early. Partial prompts were saved.")
+                raise
 
         self._save_final_prompts(final_prompts)
         return final_prompts
@@ -89,13 +99,15 @@ class TextBackPipeline:
         """
         initial_prompt = self._make_initial_prompt(target_class)
         prompt_variable = self.textgrad_optimizer.make_prompt_variable(initial_prompt, target_class)
+        optimizer = self.textgrad_optimizer.make_optimizer(prompt_variable)
         updated_prompt = self._textgrad_value(prompt_variable)
 
         for iteration in range(int(self.experiment["n_optimization_steps"])):
             prompt = self._textgrad_value(prompt_variable)
             image_path = self._optimization_image_path(target_class, iteration)
+            seed = self._optimization_seed(iteration)
 
-            self.image_generator.generate(prompt, image_path)
+            self.image_generator.generate(prompt, image_path, seed=seed)
             classifier_result = self.classifier.predict(
                 image_path=image_path,
                 target_class=target_class,
@@ -104,6 +116,7 @@ class TextBackPipeline:
 
             updated_prompt, textual_loss = self.textgrad_optimizer.step(
                 prompt_variable,
+                optimizer,
                 target_class,
                 classifier_result,
             )
@@ -113,6 +126,7 @@ class TextBackPipeline:
                 iteration,
                 prompt,
                 textual_loss,
+                seed,
                 image_path,
                 classifier_result,
             )
@@ -152,7 +166,8 @@ class TextBackPipeline:
 
             for image_index in range(n_images):
                 image_path = self._inference_image_path(target_class, image_index)
-                self.image_generator.generate(prompt, image_path)
+                seed = self._inference_seed(image_index)
+                self.image_generator.generate(prompt, image_path, seed=seed)
 
                 classifier_result = self.classifier.predict(
                     image_path=image_path,
@@ -162,7 +177,15 @@ class TextBackPipeline:
 
                 success = classifier_result["target_rank"] == 1
                 successes += int(success)
-                self._log_inference_result(target_class, image_index, prompt, image_path, classifier_result, success)
+                self._log_inference_result(
+                    target_class,
+                    image_index,
+                    prompt,
+                    seed,
+                    image_path,
+                    classifier_result,
+                    success,
+                )
 
             activation_rates[target_class] = successes / n_images if n_images > 0 else 0.0
 
@@ -187,6 +210,7 @@ class TextBackPipeline:
         iteration: int,
         prompt: str,
         textual_loss: str,
+        seed: int,
         image_path: Path,
         classifier_result: dict,
     ) -> None:
@@ -196,6 +220,7 @@ class TextBackPipeline:
             "iteration": iteration,
             "prompt": prompt,
             "textual_loss": textual_loss,
+            "seed": seed,
             "image_path": str(image_path),
             "top1_label": classifier_result["top1_label"],
             "top1_confidence": classifier_result["top1_confidence"],
@@ -213,6 +238,7 @@ class TextBackPipeline:
         target_class: str,
         image_index: int,
         prompt: str,
+        seed: int,
         image_path: Path,
         classifier_result: dict,
         success: bool,
@@ -222,6 +248,7 @@ class TextBackPipeline:
             "target_class": target_class,
             "image_index": image_index,
             "prompt": prompt,
+            "seed": seed,
             "image_path": str(image_path),
             "top1_label": classifier_result["top1_label"],
             "top1_confidence": classifier_result["top1_confidence"],
@@ -260,6 +287,18 @@ class TextBackPipeline:
 
         with path.open("r", encoding="utf-8") as file:
             return json.load(file)
+
+    def _optimization_seed(self, iteration: int) -> int:
+        """Return a reproducible seed for one optimization image."""
+        base_seed = int(self.config["image_generator"].get("base_seed", 42))
+        return base_seed + iteration
+
+    def _inference_seed(self, image_index: int) -> int:
+        """Return a reproducible, varying seed for one inference image."""
+        base_seed = int(self.config["image_generator"].get("base_seed", 42))
+        if not bool(self.config["image_generator"].get("vary_seed", True)):
+            return base_seed
+        return base_seed + 1000 + image_index
 
     def _textgrad_value(self, variable) -> str:
         """Read a TextGrad variable value across TextGrad versions."""

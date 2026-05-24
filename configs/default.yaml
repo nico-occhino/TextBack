@@ -19,8 +19,8 @@ experiment:
     - "cowboy hat"
     - "volcano"
     - "book jacket"
-  n_optimization_steps: 1
-  n_inference_images: 5
+  n_optimization_steps: 3
+  n_inference_images: 20
   top_k: 5
 
 textual_optimizer:
@@ -29,6 +29,8 @@ textual_optimizer:
 textgrad:
   backward_engine: "experimental:groq/openai/gpt-oss-20b"
   cache: true
+  sleep_seconds_after_step: 35
+  max_retries_on_rate_limit: 5
 
 image_generator:
   provider: "diffusers"
@@ -42,6 +44,8 @@ image_generator:
   enable_attention_slicing: true
   enable_cpu_offload: true
   disable_safety_checker: true
+  base_seed: 42
+  vary_seed: true
 
 classifier:
   provider: "robustbench"

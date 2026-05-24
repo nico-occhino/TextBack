@@ -24,6 +24,15 @@ The final visual classifier is `Salman2020Do_R50` from RobustBench.  This is a
 robust ImageNet ResNet-50 model.  Torchvision ResNet50 is no longer the final
 classifier for this project.
 
+## Methodological Guardrails
+
+TextBack is shortcut-only, so target leakage is a real risk.  The optimizer uses
+hard lexical guardrails: if TextGrad proposes a prompt containing target labels
+or direct object parts, the update is rejected and the previous prompt is kept.
+
+Inference uses different deterministic seeds for each generated sample.  This
+keeps samples reproducible while avoiding identical generated images.
+
 ## RobustBench Install
 
 Install RobustBench with:

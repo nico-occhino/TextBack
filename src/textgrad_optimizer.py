@@ -5,6 +5,16 @@ TextGrad API with a LiteLLM backward engine configured from YAML.
 """
 
 import os
+import time
+
+
+FORBIDDEN_TERMS = {
+    "tabby": ["tabby", "cat", "kitten", "feline", "whisker", "paw", "tail"],
+    "sports car": ["sports car", "sport car", "car", "vehicle", "wheel", "tire", "hood", "headlight"],
+    "cowboy hat": ["cowboy hat", "hat", "brim", "crown"],
+    "volcano": ["volcano", "lava", "crater", "eruption"],
+    "book jacket": ["book jacket", "book", "cover", "spine", "title"],
+}
 
 
 def clean_prompt(prompt: str) -> str:
@@ -19,6 +29,24 @@ def clean_prompt(prompt: str) -> str:
     return " ".join(prompt.strip().replace("\n", " ").split())
 
 
+def contains_forbidden_terms(prompt: str, target_class: str) -> list[str]:
+    """Find target-leaking terms in a candidate shortcut prompt.
+
+    Args:
+        prompt: Candidate image-generation prompt.
+        target_class: Hidden ImageNet target class.
+
+    Returns:
+        List of forbidden terms found in the prompt.
+    """
+    prompt_lower = prompt.lower()
+    return [
+        term
+        for term in FORBIDDEN_TERMS.get(target_class, [])
+        if term.lower() in prompt_lower
+    ]
+
+
 class TextGradPromptOptimizer:
     """Optimize image prompts with TextGrad textual gradients."""
 
@@ -31,6 +59,8 @@ class TextGradPromptOptimizer:
         self._load_env_file()
         self.backward_engine = config["textgrad"]["backward_engine"]
         self.cache = bool(config["textgrad"].get("cache", True))
+        self.sleep_seconds_after_step = int(config["textgrad"].get("sleep_seconds_after_step", 20))
+        self.max_retries_on_rate_limit = int(config["textgrad"].get("max_retries_on_rate_limit", 3))
         self._check_api_key()
 
         import textgrad as tg
@@ -61,6 +91,10 @@ class TextGradPromptOptimizer:
                 f"'{target_class}'"
             ),
         )
+
+    def make_optimizer(self, prompt_variable):
+        """Create one persistent TGD optimizer for a prompt variable."""
+        return self.tg.TGD(parameters=[prompt_variable])
 
     def build_loss_instruction(self, target_class: str, classifier_result: dict) -> str:
         """Build a natural-language loss from classifier feedback.
@@ -95,11 +129,12 @@ class TextGradPromptOptimizer:
             "Return only the improved image-generation prompt."
         )
 
-    def step(self, prompt_variable, target_class: str, classifier_result: dict) -> tuple[str, str]:
+    def step(self, prompt_variable, optimizer, target_class: str, classifier_result: dict) -> tuple[str, str]:
         """Run one TextGrad optimization step.
 
         Args:
             prompt_variable: TextGrad Variable containing the current prompt.
+            optimizer: Persistent TextGrad TGD optimizer for this prompt.
             target_class: Desired ImageNet class.
             classifier_result: Output dictionary from classifier.predict().
 
@@ -107,25 +142,69 @@ class TextGradPromptOptimizer:
             Updated prompt text and textual loss/feedback string.
         """
         loss_instruction = self.build_loss_instruction(target_class, classifier_result)
+        previous_prompt = clean_prompt(self._value_of(prompt_variable))
 
         # tg.TextLoss turns classifier feedback into a textual loss function.
         loss_fn = self.tg.TextLoss(loss_instruction)
 
-        # TGD is Textual Gradient Descent: it updates text using gradients.
-        optimizer = self.tg.TGD(parameters=[prompt_variable])
-        optimizer.zero_grad()
+        loss = self._run_textgrad_update_with_retries(loss_fn, prompt_variable, optimizer)
 
-        loss = loss_fn(prompt_variable)
+        candidate_prompt = clean_prompt(self._value_of(prompt_variable))
+        textual_loss = self._value_of(loss)
+        forbidden_terms = contains_forbidden_terms(candidate_prompt, target_class)
+        if forbidden_terms:
+            self._set_value(prompt_variable, previous_prompt)
+            rejected_terms = ", ".join(forbidden_terms)
+            return previous_prompt, f"{textual_loss} [REJECTED: forbidden terms: {rejected_terms}]"
 
-        # loss.backward() asks the backward engine for textual gradients.
-        loss.backward()
+        self._set_value(prompt_variable, candidate_prompt)
+        return candidate_prompt, textual_loss
 
-        # optimizer.step() applies those textual gradients to the prompt.
-        optimizer.step()
+    def _run_textgrad_update_with_retries(self, loss_fn, prompt_variable, optimizer):
+        """Run loss/backward/step with simple rate-limit retries."""
+        max_attempts = self.max_retries_on_rate_limit + 1
 
-        cleaned_prompt = clean_prompt(self._value_of(prompt_variable))
-        self._set_value(prompt_variable, cleaned_prompt)
-        return cleaned_prompt, self._value_of(loss)
+        for attempt in range(1, max_attempts + 1):
+            try:
+                optimizer.zero_grad()
+                loss = loss_fn(prompt_variable)
+
+                # loss.backward() asks the backward engine for textual gradients.
+                loss.backward()
+
+                # optimizer.step() applies those textual gradients to the prompt.
+                optimizer.step()
+
+                time.sleep(self.sleep_seconds_after_step)
+                return loss
+            except Exception as error:
+                if self._is_rate_limit_error(error) and attempt < max_attempts:
+                    print(
+                        "Rate limit reached during TextGrad step. "
+                        f"Sleeping {self.sleep_seconds_after_step} seconds before retry "
+                        f"{attempt}/{self.max_retries_on_rate_limit}."
+                    )
+                    time.sleep(self.sleep_seconds_after_step)
+                    continue
+                if self._is_rate_limit_error(error):
+                    raise RuntimeError(
+                        "TextGrad step failed after rate-limit retries. Increase "
+                        "sleep_seconds_after_step or reduce classes per run."
+                    ) from error
+                raise
+
+    def _is_rate_limit_error(self, error: Exception) -> bool:
+        """Return True when an exception looks like a provider rate limit."""
+        message = str(error).lower()
+        rate_limit_markers = [
+            "429",
+            "rate limit",
+            "too many requests",
+            "tpm",
+            "tokens per minute",
+            "retryerror",
+        ]
+        return any(marker in message for marker in rate_limit_markers)
 
     def _set_backward_engine(self) -> None:
         """Set TextGrad's global backward engine with a small compatibility shim."""

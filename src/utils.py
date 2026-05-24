@@ -3,16 +3,37 @@
 import random
 import re
 from pathlib import Path
-from typing import Any
 
 
 def set_seed(seed: int) -> None:
-    """Set the Python random seed.
+    """Seed common random number generators for reproducibility.
+
+    This improves reproducibility, but full bitwise determinism is not
+    guaranteed for all CUDA/Diffusers operations.
 
     Args:
         seed: Integer seed used for reproducible experiments.
     """
     random.seed(seed)
+
+    try:
+        import numpy as np
+
+        np.random.seed(seed)
+    except ImportError:
+        pass
+
+    try:
+        import torch
+
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+    except ImportError:
+        pass
 
 
 def slugify(text: str) -> str:
@@ -40,18 +61,3 @@ def ensure_dir(path: str | Path) -> Path:
     directory = Path(path)
     directory.mkdir(parents=True, exist_ok=True)
     return directory
-
-
-def get_nested(config: dict[str, Any], section: str, key: str, default: Any) -> Any:
-    """Read a nested config value with a default.
-
-    Args:
-        config: Loaded configuration dictionary.
-        section: Top-level key.
-        key: Nested key inside the section.
-        default: Value returned when the key is missing.
-
-    Returns:
-        The configured value or the default.
-    """
-    return config.get(section, {}).get(key, default)

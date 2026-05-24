@@ -21,12 +21,13 @@ class DummyImageGenerator:
         self.width = width
         self.height = height
 
-    def generate(self, prompt: str, output_path: str | Path) -> Path:
+    def generate(self, prompt: str, output_path: str | Path, seed: int | None = None) -> Path:
         """Create a simple placeholder image without prompt text.
 
         Args:
             prompt: Prompt used only to choose deterministic colors.
             output_path: Path where the image should be saved.
+            seed: Optional seed, accepted for interface compatibility.
 
         Returns:
             Path to the saved image.
@@ -71,6 +72,7 @@ class LocalDiffusersGenerator:
         import torch
         from diffusers import DiffusionPipeline
 
+        self.torch = torch
         self.generator_config = config["image_generator"]
 
         requested_device = config["project"].get("device", "cpu")
@@ -103,18 +105,22 @@ class LocalDiffusersGenerator:
         else:
             self.pipe.to(self.device)
 
-    def generate(self, prompt: str, output_path: str | Path) -> Path:
+    def generate(self, prompt: str, output_path: str | Path, seed: int | None = None) -> Path:
         """Generate one image from a prompt and save it.
 
         Args:
             prompt: Text-to-image prompt.
             output_path: Path where the generated image should be saved.
+            seed: Optional deterministic seed for Diffusers generation.
 
         Returns:
             Path to the saved image.
         """
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
+        generator = None
+        if seed is not None:
+            generator = self.torch.Generator(device=self.device).manual_seed(seed)
 
         image = self.pipe(
             prompt,
@@ -122,6 +128,7 @@ class LocalDiffusersGenerator:
             width=int(self.generator_config.get("width", 384)),
             num_inference_steps=int(self.generator_config.get("num_inference_steps", 10)),
             guidance_scale=float(self.generator_config.get("guidance_scale", 7.5)),
+            generator=generator,
         ).images[0]
 
         self._warn_if_almost_black(image)
