@@ -10,7 +10,7 @@ def set_seed(seed: int) -> None:
     """Set the Python random seed.
 
     Args:
-        seed: Integer seed used for reproducible dummy experiments.
+        seed: Integer seed used for reproducible experiments.
     """
     random.seed(seed)
 

@@ -1,98 +1,46 @@
-"""Image generation utilities for TextBack.
+"""Image generators for TextBack.
 
-The real experiment uses a local Diffusers pipeline.  The dummy generator stays
-available for testing the project plumbing without a GPU or model download.
+The real experiments use Diffusers.  The dummy generator is kept only for quick
+development checks when we do not want to load a diffusion model.
 """
 
 from pathlib import Path
 import hashlib
-from textwrap import wrap
-import struct
-import zlib
 
 
 class DummyImageGenerator:
-    """Create simple placeholder images from prompts.
+    """Development-only generator that writes a simple colored shape."""
 
-    This generator is only for testing the pipeline plumbing.  Its images are
-    not meaningful samples and should not be used for scientific evaluation.
-    """
-
-    def __init__(self, width: int = 512, height: int = 512, draw_text: bool = False) -> None:
-        """Store output image size.
+    def __init__(self, width: int = 384, height: int = 384) -> None:
+        """Store image size.
 
         Args:
-            width: Image width in pixels.
-            height: Image height in pixels.
-            draw_text: If True, write the prompt on the dummy image.
+            width: Output width in pixels.
+            height: Output height in pixels.
         """
         self.width = width
         self.height = height
-        self.draw_text = draw_text
 
     def generate(self, prompt: str, output_path: str | Path) -> Path:
-        """Generate a placeholder RGB image and save it.
+        """Create a simple placeholder image without prompt text.
 
         Args:
-            prompt: Text prompt used to describe the desired image.
+            prompt: Prompt used only to choose deterministic colors.
             output_path: Path where the image should be saved.
 
         Returns:
             Path to the saved image.
         """
+        from PIL import Image, ImageDraw
+
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        try:
-            if self.draw_text:
-                self._generate_text_image(prompt, output_path)
-            else:
-                self._generate_shape_image(prompt, output_path)
-        except ModuleNotFoundError:
-            # Fallback for bare Python environments.  It cannot draw text, but
-            # it still produces a valid RGB PNG with a central geometric object.
-            self._generate_plain_shape_png(prompt, output_path)
-
-        return output_path
-
-    def _generate_text_image(self, prompt: str, output_path: Path) -> None:
-        """Use PIL to create a placeholder image with prompt text.
-
-        Args:
-            prompt: Prompt text to draw on the image.
-            output_path: Image path to save.
-        """
-        from PIL import Image, ImageDraw
-
-        image = Image.new("RGB", (self.width, self.height), self._color_from_prompt(prompt))
-        draw = ImageDraw.Draw(image)
-
-        draw.rectangle((24, 24, self.width - 24, self.height - 24), outline="white", width=3)
-        draw.text((40, 40), "TextBack dummy image", fill="white")
-
-        y_position = 90
-        for line in wrap(prompt, width=52):
-            draw.text((40, y_position), line, fill="white")
-            y_position += 24
-
-        image.save(output_path)
-
-    def _generate_shape_image(self, prompt: str, output_path: Path) -> None:
-        """Use PIL to create a text-free geometric dummy image.
-
-        Args:
-            prompt: Prompt used to choose deterministic colors.
-            output_path: Image path to save.
-        """
-        from PIL import Image, ImageDraw
-
         background_color = self._color_from_prompt(prompt)
-        object_color = self._contrast_color(background_color)
+        object_color = tuple(255 - value for value in background_color)
         image = Image.new("RGB", (self.width, self.height), background_color)
         draw = ImageDraw.Draw(image)
 
-        # A plain central object is less likely than text to trigger labels such
-        # as "web site" when experimenting with a real classifier.
         margin_x = self.width // 4
         margin_y = self.height // 4
         draw.ellipse(
@@ -101,77 +49,14 @@ class DummyImageGenerator:
             outline="white",
             width=4,
         )
-        draw.rectangle(
-            (self.width // 2 - 35, self.height // 2 - 35, self.width // 2 + 35, self.height // 2 + 35),
-            fill=background_color,
-            outline="white",
-            width=3,
-        )
 
         image.save(output_path)
-
-    def _generate_plain_shape_png(self, prompt: str, output_path: Path) -> None:
-        """Write a simple geometric PNG without external dependencies.
-
-        Args:
-            prompt: Prompt used to choose deterministic colors.
-            output_path: Image path to save.
-        """
-        background_color = self._color_from_prompt(prompt)
-        object_color = self._contrast_color(background_color)
-        raw_rows = []
-
-        center_x = self.width / 2
-        center_y = self.height / 2
-        radius = min(self.width, self.height) / 4
-
-        for y in range(self.height):
-            row_pixels = bytearray()
-            for x in range(self.width):
-                distance = ((x - center_x) ** 2 + (y - center_y) ** 2) ** 0.5
-                color = object_color if distance < radius else background_color
-                row_pixels.extend(color)
-            raw_rows.append(b"\x00" + bytes(row_pixels))
-
-        raw_pixels = b"".join(raw_rows)
-
-        def chunk(name: bytes, data: bytes) -> bytes:
-            return (
-                struct.pack(">I", len(data))
-                + name
-                + data
-                + struct.pack(">I", zlib.crc32(name + data) & 0xFFFFFFFF)
-            )
-
-        png = b"\x89PNG\r\n\x1a\n"
-        png += chunk("IHDR".encode(), struct.pack(">IIBBBBB", self.width, self.height, 8, 2, 0, 0, 0))
-        png += chunk("IDAT".encode(), zlib.compress(raw_pixels))
-        png += chunk("IEND".encode(), b"")
-        output_path.write_bytes(png)
+        return output_path
 
     def _color_from_prompt(self, prompt: str) -> tuple[int, int, int]:
-        """Create a deterministic RGB color from prompt text.
-
-        Args:
-            prompt: Text prompt.
-
-        Returns:
-            RGB tuple.
-        """
+        """Create a deterministic RGB color from prompt text."""
         digest = hashlib.md5(prompt.encode("utf-8")).digest()
         return (70 + digest[0] % 120, 70 + digest[1] % 120, 70 + digest[2] % 120)
-
-    def _contrast_color(self, color: tuple[int, int, int]) -> tuple[int, int, int]:
-        """Create a visible foreground color for the central object.
-
-        Args:
-            color: Background RGB color.
-
-        Returns:
-            Contrasting RGB color.
-        """
-        red, green, blue = color
-        return (255 - red, 255 - green, 255 - blue)
 
 
 class LocalDiffusersGenerator:
@@ -186,49 +71,32 @@ class LocalDiffusersGenerator:
         import torch
         from diffusers import DiffusionPipeline
 
-        self.torch = torch
-        self.config = config
-        self.generator_config = config.get("image_generator", {})
+        self.generator_config = config["image_generator"]
 
-        requested_device = config.get("project", {}).get("device", "cpu")
-        cuda_available = torch.cuda.is_available()
-        self.device = "cuda" if requested_device == "cuda" and cuda_available else "cpu"
-
-        force_float32 = bool(self.generator_config.get("force_float32", False))
-        use_float16 = bool(self.generator_config.get("use_float16", True))
-        if force_float32:
-            dtype = torch.float32
-        elif use_float16 and self.device == "cuda":
-            dtype = torch.float16
-        else:
-            dtype = torch.float32
-
+        requested_device = config["project"].get("device", "cpu")
+        self.device = "cuda" if requested_device == "cuda" and torch.cuda.is_available() else "cpu"
+        dtype = self._select_dtype(torch)
         model_name = self.generator_config["model_name"]
         disable_safety_checker = bool(self.generator_config.get("disable_safety_checker", False))
 
         load_kwargs = {"torch_dtype": dtype}
         if disable_safety_checker:
-            # Only disable this for controlled academic experiments.  Do not
-            # use this option for public image generation systems.
+            # Only for controlled academic experiments. Do not disable safety
+            # checks in public image generation systems.
             load_kwargs["safety_checker"] = None
 
         try:
             self.pipe = DiffusionPipeline.from_pretrained(model_name, **load_kwargs)
         except TypeError:
-            # Some pipelines do not accept safety_checker at load time.
             load_kwargs.pop("safety_checker", None)
             self.pipe = DiffusionPipeline.from_pretrained(model_name, **load_kwargs)
 
         if bool(self.generator_config.get("enable_attention_slicing", False)):
             self.pipe.enable_attention_slicing()
 
-        # Only disable this for controlled academic experiments.  Do not use
-        # this option for public image generation systems.
         if disable_safety_checker and hasattr(self.pipe, "safety_checker"):
             self.pipe.safety_checker = None
 
-        # CPU offload can save VRAM, but it requires accelerate and a compatible
-        # pipeline.  If unavailable, we fall back to the normal .to(device).
         use_cpu_offload = bool(self.generator_config.get("enable_cpu_offload", False))
         if use_cpu_offload and hasattr(self.pipe, "enable_model_cpu_offload"):
             self.pipe.enable_model_cpu_offload()
@@ -236,10 +104,10 @@ class LocalDiffusersGenerator:
             self.pipe.to(self.device)
 
     def generate(self, prompt: str, output_path: str | Path) -> Path:
-        """Generate an image with the local diffusion model.
+        """Generate one image from a prompt and save it.
 
         Args:
-            prompt: Text prompt.
+            prompt: Text-to-image prompt.
             output_path: Path where the generated image should be saved.
 
         Returns:
@@ -260,12 +128,16 @@ class LocalDiffusersGenerator:
         image.save(output_path)
         return output_path
 
-    def _warn_if_almost_black(self, image) -> None:
-        """Warn when Diffusers returns an almost black image.
+    def _select_dtype(self, torch):
+        """Choose the dtype used to load the diffusion model."""
+        if bool(self.generator_config.get("force_float32", False)):
+            return torch.float32
+        if bool(self.generator_config.get("use_float16", True)) and self.device == "cuda":
+            return torch.float16
+        return torch.float32
 
-        Args:
-            image: PIL image returned by the diffusion pipeline.
-        """
+    def _warn_if_almost_black(self, image) -> None:
+        """Warn when a generated image looks almost entirely black."""
         grayscale = image.convert("L")
         pixels = list(grayscale.getdata())
         mean_pixel = sum(pixels) / len(pixels)
@@ -278,25 +150,23 @@ class LocalDiffusersGenerator:
 
 
 def build_image_generator(config: dict):
-    """Build the image generator selected by the config.
+    """Create the configured image generator.
 
     Args:
         config: Loaded project configuration.
 
     Returns:
-        Image generator instance.
+        LocalDiffusersGenerator or development-only DummyImageGenerator.
     """
-    generator_config = config.get("image_generator", {})
-    provider = generator_config.get("provider", "dummy")
+    generator_config = config["image_generator"]
+    provider = generator_config.get("provider", "diffusers")
 
     if provider == "diffusers":
         return LocalDiffusersGenerator(config)
+    if provider == "dummy":
+        return DummyImageGenerator(
+            width=int(generator_config.get("width", 384)),
+            height=int(generator_config.get("height", 384)),
+        )
 
-    if provider != "dummy":
-        print("Unknown image generator provider. Falling back to dummy generator.")
-
-    return DummyImageGenerator(
-        width=int(generator_config.get("width", 512)),
-        height=int(generator_config.get("height", 512)),
-        draw_text=bool(generator_config.get("draw_text_on_dummy_image", False)),
-    )
+    raise ValueError(f"Unsupported image generator provider: {provider}")

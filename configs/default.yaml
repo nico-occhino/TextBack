@@ -29,10 +29,6 @@ textgrad:
   backward_engine: "experimental:gemini/gemini-3.5-flash"
   cache: true
 
-llm:
-  provider: "gemini"
-  model_name: "gemini-3.5-flash"
-
 image_generator:
   provider: "diffusers"
   model_name: "runwayml/stable-diffusion-v1-5"
@@ -45,7 +41,6 @@ image_generator:
   enable_attention_slicing: true
   enable_cpu_offload: false
   disable_safety_checker: true
-  draw_text_on_dummy_image: false
 
 classifier:
   provider: "torchvision"

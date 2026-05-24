@@ -1,8 +1,8 @@
 """Main TextBack pipeline.
 
-The pipeline keeps the experiment loop explicit: prompt, image, classifier,
-textual feedback, prompt update.  This is easier to discuss and modify during
-an oral exam than a heavily abstracted framework.
+The optimization loop is intentionally direct:
+TextGrad prompt variable -> Diffusers image -> ResNet50 prediction ->
+TextGrad textual loss/backward/TGD step.
 """
 
 import json
@@ -11,9 +11,8 @@ from pathlib import Path
 from src.classifier import build_classifier
 from src.config import create_output_dirs
 from src.image_generator import build_image_generator
-from src.llm_client import DummyLLMClient
 from src.logging_utils import append_csv_row, append_jsonl_record, write_json
-from src.textual_backward import TextualBackwardOptimizer
+from src.textgrad_optimizer import TextGradPromptOptimizer
 from src.utils import ensure_dir, set_seed, slugify
 
 
@@ -44,10 +43,10 @@ INFERENCE_COLUMNS = [
 
 
 class TextBackPipeline:
-    """Orchestrates prompt optimization and inference evaluation."""
+    """Run TextGrad optimization and inference evaluation."""
 
     def __init__(self, config: dict) -> None:
-        """Initialize all components from the config.
+        """Initialize TextGrad, generator, and classifier.
 
         Args:
             config: Loaded configuration dictionary.
@@ -55,49 +54,35 @@ class TextBackPipeline:
         self.config = config
         self.paths = config["paths"]
         self.experiment = config["experiment"]
-        self.optimizer_backend = config.get("textual_optimizer", {}).get("backend", "custom")
 
         create_output_dirs(config)
-        set_seed(int(config.get("project", {}).get("seed", 42)))
+        set_seed(int(config["project"].get("seed", 42)))
 
-        self.llm_client = DummyLLMClient()
-        self.textgrad_optimizer = None
-        if self.optimizer_backend == "textgrad":
-            from src.textgrad_optimizer import TextGradPromptOptimizer
-
-            self.textgrad_optimizer = TextGradPromptOptimizer(config)
-
+        self.textgrad_optimizer = TextGradPromptOptimizer(config)
         self.image_generator = build_image_generator(config)
         self.classifier = build_classifier(config)
-        self.textual_optimizer = TextualBackwardOptimizer(
-            llm_client=self.llm_client,
-            prompts_dir=self.paths["prompts_dir"],
-        )
 
     def run_optimization(self) -> dict[str, str]:
-        """Run prompt optimization for every configured target class.
+        """Optimize prompts for all configured target classes.
 
         Returns:
-            Dictionary mapping each target class to its final prompt.
+            Mapping from target class to final prompt.
         """
         self._reset_optimization_logs()
         final_prompts = {}
 
         for target_class in self.experiment["target_classes"]:
             print(f"Optimizing prompt for: {target_class}")
-            if self.optimizer_backend == "textgrad":
-                final_prompts[target_class] = self._run_textgrad_optimization_for_class(target_class)
-            else:
-                final_prompts[target_class] = self._run_custom_optimization_for_class(target_class)
+            final_prompts[target_class] = self._optimize_one_class(target_class)
 
         self._save_final_prompts(final_prompts)
         return final_prompts
 
-    def _run_textgrad_optimization_for_class(self, target_class: str) -> str:
-        """Optimize one class prompt with the official TextGrad backend.
+    def _optimize_one_class(self, target_class: str) -> str:
+        """Run TextGrad prompt optimization for one class.
 
         Args:
-            target_class: Desired ImageNet class.
+            target_class: Exact ImageNet target label.
 
         Returns:
             Final optimized prompt.
@@ -113,7 +98,6 @@ class TextBackPipeline:
             prompt = self._textgrad_value(prompt_variable)
             image_path = self._optimization_image_path(target_class, iteration)
 
-            # Forward pass: TextGrad prompt -> image -> classifier feedback.
             self.image_generator.generate(prompt, image_path)
             classifier_result = self.classifier.predict(
                 image_path=image_path,
@@ -121,7 +105,6 @@ class TextBackPipeline:
                 top_k=int(self.experiment.get("top_k", 5)),
             )
 
-            # TextGrad backward pass: feedback -> TextLoss -> gradients -> TGD update.
             updated_prompt, textual_loss = self.textgrad_optimizer.step(
                 prompt_variable,
                 target_class,
@@ -139,53 +122,11 @@ class TextBackPipeline:
 
         return updated_prompt
 
-    def _run_custom_optimization_for_class(self, target_class: str) -> str:
-        """Optimize one class prompt with the old custom backend.
-
-        Args:
-            target_class: Desired ImageNet class.
-
-        Returns:
-            Final optimized prompt.
-        """
-        prompt = self.textual_optimizer.initial_prompt(target_class)
-
-        for iteration in range(int(self.experiment["n_optimization_steps"])):
-            image_path = self._optimization_image_path(target_class, iteration)
-
-            # Forward pass: prompt -> image -> classifier prediction.
-            self.image_generator.generate(prompt, image_path)
-            classifier_result = self.classifier.predict(
-                image_path=image_path,
-                target_class=target_class,
-                top_k=int(self.experiment.get("top_k", 5)),
-            )
-
-            # Backward/update signal: classifier result -> textual loss.
-            textual_loss = self.textual_optimizer.textual_loss(
-                target_class,
-                prompt,
-                classifier_result,
-            )
-
-            self._log_optimization_step(
-                target_class,
-                iteration,
-                prompt,
-                textual_loss,
-                image_path,
-                classifier_result,
-            )
-
-            prompt = self.textual_optimizer.refine(target_class, prompt, classifier_result)
-
-        return prompt
-
     def run_inference(self) -> dict[str, float]:
-        """Evaluate final prompts with multiple generated images.
+        """Generate images from final prompts and evaluate activation rate.
 
         Returns:
-            Dictionary mapping each target class to activation maximization rate.
+            Mapping from target class to activation maximization rate.
         """
         self._reset_inference_logs()
         final_prompts = self._load_final_prompts()
@@ -216,29 +157,13 @@ class TextBackPipeline:
         return activation_rates
 
     def _optimization_image_path(self, target_class: str, iteration: int) -> Path:
-        """Build an optimization image path for a class and iteration.
-
-        Args:
-            target_class: Desired ImageNet class.
-            iteration: Optimization step index.
-
-        Returns:
-            Path where the generated image should be saved.
-        """
+        """Build the optimization image path for one iteration."""
         image_dir = Path(self.paths["generated_images_dir"]) / slugify(target_class) / "optimization"
         ensure_dir(image_dir)
         return image_dir / f"step_{iteration:03d}.png"
 
     def _inference_image_path(self, target_class: str, image_index: int) -> Path:
-        """Build an inference image path for a class and sample index.
-
-        Args:
-            target_class: Desired ImageNet class.
-            image_index: Inference sample index.
-
-        Returns:
-            Path where the generated image should be saved.
-        """
+        """Build the inference image path for one generated sample."""
         image_dir = Path(self.paths["generated_images_dir"]) / slugify(target_class) / "inference"
         ensure_dir(image_dir)
         return image_dir / f"sample_{image_index:03d}.png"
@@ -252,16 +177,7 @@ class TextBackPipeline:
         image_path: Path,
         classifier_result: dict,
     ) -> None:
-        """Save one optimization step to CSV and JSONL logs.
-
-        Args:
-            target_class: Desired ImageNet class.
-            iteration: Optimization step index.
-            prompt: Prompt used for the image.
-            textual_loss: Natural language feedback.
-            image_path: Saved image path.
-            classifier_result: Output from classifier.predict().
-        """
+        """Save one optimization step to CSV and JSONL."""
         row = {
             "target_class": target_class,
             "iteration": iteration,
@@ -288,16 +204,7 @@ class TextBackPipeline:
         classifier_result: dict,
         success: bool,
     ) -> None:
-        """Save one inference image result to CSV.
-
-        Args:
-            target_class: Desired ImageNet class.
-            image_index: Inference sample index.
-            prompt: Final prompt used to generate the image.
-            image_path: Saved image path.
-            classifier_result: Output from classifier.predict().
-            success: True when the target class is top-1.
-        """
+        """Save one inference image result to CSV."""
         row = {
             "target_class": target_class,
             "image_index": image_index,
@@ -313,11 +220,7 @@ class TextBackPipeline:
         append_csv_row(Path(self.paths["results_dir"]) / "inference_results.csv", row, INFERENCE_COLUMNS)
 
     def _save_final_prompts(self, final_prompts: dict[str, str]) -> None:
-        """Save final prompts after optimization.
-
-        Args:
-            final_prompts: Mapping from target class to final prompt.
-        """
+        """Save final prompts after optimization."""
         write_json(Path(self.paths["results_dir"]) / "final_prompts.json", final_prompts)
 
     def _reset_optimization_logs(self) -> None:
@@ -335,11 +238,7 @@ class TextBackPipeline:
             path.unlink()
 
     def _load_final_prompts(self) -> dict[str, str]:
-        """Load final prompts produced by run_optimization().
-
-        Returns:
-            Mapping from target class to final prompt.
-        """
+        """Load prompts saved by run_optimization()."""
         path = Path(self.paths["results_dir"]) / "final_prompts.json"
         if not path.exists():
             raise FileNotFoundError("Run optimization first: results/final_prompts.json is missing.")

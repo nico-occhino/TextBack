@@ -1,13 +1,25 @@
 # TextBack
 
 TextBack is an Advanced Deep Learning exam project for probing spurious visual
-features in ImageNet classifiers.  The real optimization backend uses the
-official TextGrad library: prompt variable, generated image, classifier
-feedback, `TextLoss`, `loss.backward()`, and `TGD.step()`.
+features in ImageNet classifiers.  The final pipeline uses the official
+TextGrad library, Gemini as the TextGrad backward engine, local Diffusers image
+generation, and Torchvision ResNet50.
 
-The default config is intentionally tiny: 1 target class, 1 optimization step,
-and 1 inference image.  This avoids wasting GPU time and API calls while
-checking that the full pipeline is connected.
+The optimization loop is:
+
+```text
+TextGrad prompt variable
+  -> Diffusers generated image
+  -> ResNet50 ImageNet prediction
+  -> TextGrad TextLoss from classifier feedback
+  -> loss.backward()
+  -> TextGrad TGD step
+  -> updated prompt
+```
+
+The default config is intentionally tiny: 1 class, 1 optimization step, and 1
+inference image.  This checks the pipeline without wasting GPU time or Gemini
+API calls.
 
 ## Environment
 
@@ -17,13 +29,11 @@ Create a local `.env` file from the example:
 copy .env.example .env
 ```
 
-Then edit `.env` and set:
+Then edit `.env`:
 
 ```text
 GEMINI_API_KEY=your_real_key_here
 ```
-
-Do not commit `.env`.  It is ignored by git.
 
 Check the environment:
 
@@ -31,42 +41,22 @@ Check the environment:
 python scripts/check_environment.py
 ```
 
-This prints the Python version, torch/CUDA status, selected GPU, whether a
-Gemini key is present, and whether `textgrad` and `diffusers` import.
+## ImageNet Labels
 
-## Tiny Run
-
-Run one small optimization:
-
-```bash
-python scripts/run_optimization.py --config configs/default.yaml
-```
-
-Then generate one inference image from the final prompt:
-
-```bash
-python scripts/run_inference.py --config configs/default.yaml
-```
-
-Outputs are written under `results/`, including optimization logs, final
-prompts, inference results, and generated images.
-
-## Useful Helpers
-
-List exact ImageNet labels:
+Target classes must match Torchvision ImageNet labels exactly.  Search labels
+with:
 
 ```bash
 python scripts/list_imagenet_classes.py --query bus
-python scripts/list_imagenet_classes.py --query dog
 ```
 
-## Real ImageNet Subset
+## Manual ImageNet Subset
 
-Torchvision provides pretrained model weights, but it does not automatically
-download the ImageNet / ILSVRC2012 dataset.  You must manually obtain ImageNet
-or create a small subset yourself.
+Torchvision downloads pretrained model weights, but it does not download the
+ImageNet / ILSVRC2012 dataset.  ImageNet must be obtained manually, or a small
+subset must be created by hand.
 
-For Project 17, prepare a subset such as 5 classes x 50 real images:
+For the project evaluation, use a folder like:
 
 ```text
 data/imagenet_subset/
@@ -77,9 +67,11 @@ data/imagenet_subset/
     img001.JPEG
 ```
 
-The folder names are used as target labels, so they should match torchvision
-ImageNet class names exactly.  Use `scripts/list_imagenet_classes.py` to check
-the labels before naming folders.
+The folder name is treated as the exact target label:
+
+```text
+data/imagenet_subset/<exact ImageNet label>/*.jpg
+```
 
 Evaluate the real subset:
 
@@ -87,22 +79,37 @@ Evaluate the real subset:
 python scripts/evaluate_real_subset.py --config configs/default.yaml
 ```
 
-This writes:
+This writes `results/real_subset_predictions.csv` and
+`results/real_subset_summary.csv`.
 
-- `results/real_subset_predictions.csv`
-- `results/real_subset_summary.csv`
+## TextBack Runs
+
+Run one tiny optimization:
+
+```bash
+python scripts/run_optimization.py --config configs/default.yaml
+```
+
+Run inference from the final prompt:
+
+```bash
+python scripts/run_inference.py --config configs/default.yaml
+```
+
+Outputs are written under `results/`.
 
 ## Main Files
 
 ```text
-configs/default.yaml          experiment settings
-src/classifier.py             dummy and torchvision ImageNet classifiers
-src/image_generator.py        dummy and local Diffusers image generators
-src/textgrad_optimizer.py     official TextGrad prompt optimizer
-src/textual_backward.py       older custom prompt optimizer
-src/pipeline.py               optimization and inference orchestration
-scripts/run_optimization.py   optimization entry point
-scripts/run_inference.py      inference entry point
-scripts/check_environment.py  dependency and key checker
-scripts/evaluate_real_subset.py real ImageNet subset evaluation
+configs/default.yaml             experiment settings
+src/config.py                    YAML loading and validation
+src/classifier.py                Torchvision ResNet50 ImageNet classifier
+src/image_generator.py           Diffusers generator and dev dummy generator
+src/textgrad_optimizer.py        TextGrad prompt optimization
+src/pipeline.py                  optimization and inference orchestration
+scripts/check_environment.py     dependency and key checker
+scripts/list_imagenet_classes.py ImageNet label lookup
+scripts/evaluate_real_subset.py  real ImageNet subset evaluation
+scripts/run_optimization.py      TextBack optimization entry point
+scripts/run_inference.py         TextBack inference entry point
 ```
