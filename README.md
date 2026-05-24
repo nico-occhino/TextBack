@@ -2,8 +2,8 @@
 
 TextBack is an Advanced Deep Learning exam project for probing spurious visual
 features in ImageNet classifiers.  The final pipeline uses the official
-TextGrad library, Gemini as the TextGrad backward engine, local Diffusers image
-generation, and Torchvision ResNet50.
+TextGrad library, Groq/LiteLLM as the recommended TextGrad backward engine,
+local Diffusers image generation, and Torchvision ResNet50.
 
 The optimization loop is:
 
@@ -17,9 +17,8 @@ TextGrad prompt variable
   -> updated prompt
 ```
 
-The default config is intentionally tiny: 1 class, 1 optimization step, and 1
-inference image.  This checks the pipeline without wasting GPU time or Gemini
-API calls.
+The default config keeps the run small enough for iterative testing before
+launching larger experiments.
 
 ## Environment
 
@@ -32,8 +31,24 @@ copy .env.example .env
 Then edit `.env`:
 
 ```text
-GEMINI_API_KEY=your_real_key_here
+GROQ_API_KEY=your_real_groq_key_here
 ```
+
+The recommended TextGrad backend is:
+
+```text
+experimental:groq/qwen/qwen3-32b
+```
+
+A cheaper alternative to try is:
+
+```text
+experimental:groq/openai/gpt-oss-20b
+```
+
+Gemini can still be used by changing `textgrad.backward_engine` in
+`configs/default.yaml` and setting `GEMINI_API_KEY` or `GOOGLE_API_KEY`.
+ChatGPT Plus does not include API usage; API keys and billing are separate.
 
 Check the environment:
 

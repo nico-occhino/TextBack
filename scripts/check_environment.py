@@ -31,7 +31,10 @@ def main() -> None:
         print("Selected GPU: unknown")
 
     has_gemini_key = bool(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"))
+    has_groq_key = bool(os.getenv("GROQ_API_KEY"))
     print(f"python-dotenv import: {dotenv_status}")
+    print("Recommended TextGrad backend: Groq")
+    print(f"Groq API key present: {has_groq_key}")
     print(f"Gemini API key present: {has_gemini_key}")
 
     try:

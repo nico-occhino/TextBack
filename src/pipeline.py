@@ -224,18 +224,20 @@ class TextBackPipeline:
         write_json(Path(self.paths["results_dir"]) / "final_prompts.json", final_prompts)
 
     def _reset_optimization_logs(self) -> None:
-        """Remove old optimization logs before a new run."""
+        """Remove old optimization outputs before a new run."""
         results_dir = Path(self.paths["results_dir"])
-        for file_name in ["optimization_logs.csv", "optimization_logs.jsonl"]:
+        for file_name in ["final_prompts.json", "optimization_logs.csv", "optimization_logs.jsonl"]:
             path = results_dir / file_name
             if path.exists():
                 path.unlink()
 
     def _reset_inference_logs(self) -> None:
-        """Remove old inference logs before a new run."""
-        path = Path(self.paths["results_dir"]) / "inference_results.csv"
-        if path.exists():
-            path.unlink()
+        """Remove old inference outputs before a new run."""
+        results_dir = Path(self.paths["results_dir"])
+        for file_name in ["inference_results.csv", "activation_rates.json", "inference_metrics.json"]:
+            path = results_dir / file_name
+            if path.exists():
+                path.unlink()
 
     def _load_final_prompts(self) -> dict[str, str]:
         """Load prompts saved by run_optimization()."""

@@ -1,7 +1,7 @@
 """TextGrad prompt optimizer for TextBack.
 
 This module contains the real textual-backward backend.  It uses the official
-TextGrad API with a Gemini/LiteLLM backward engine configured from YAML.
+TextGrad API with a LiteLLM backward engine configured from YAML.
 """
 
 import os
@@ -34,14 +34,14 @@ class TextGradPromptOptimizer:
             config: Loaded project configuration.
         """
         self._load_env_file()
-        self._check_gemini_key()
+        self.backward_engine = config["textgrad"]["backward_engine"]
+        self.cache = bool(config["textgrad"].get("cache", True))
+        self.objective_mode = config.get("textual_optimizer", {}).get("objective_mode", "prototype")
+        self._check_api_key()
 
         import textgrad as tg
 
         self.tg = tg
-        self.backward_engine = config["textgrad"]["backward_engine"]
-        self.cache = bool(config["textgrad"].get("cache", True))
-        self.objective_mode = config.get("textual_optimizer", {}).get("objective_mode", "prototype")
 
         # TextGrad uses this engine during loss.backward(), where textual
         # gradients are produced by the LLM.
@@ -157,12 +157,26 @@ class TextGradPromptOptimizer:
             # Older TextGrad versions may not expose the cache argument here.
             self.tg.set_backward_engine(self.backward_engine, override=True)
 
-    def _check_gemini_key(self) -> None:
-        """Raise a readable error if no Gemini key is available."""
-        if not os.getenv("GEMINI_API_KEY") and not os.getenv("GOOGLE_API_KEY"):
+    def _check_api_key(self) -> None:
+        """Check the API key expected by the selected TextGrad backend."""
+        backend = self.backward_engine.lower()
+
+        if "gemini" in backend and not (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")):
             raise RuntimeError(
-                "Gemini API key not found. Create a .env file with "
-                "GEMINI_API_KEY=put_your_key_here"
+                f"Missing API key for selected TextGrad backend: {self.backward_engine}. "
+                "Add it to .env."
+            )
+
+        if "groq" in backend and not os.getenv("GROQ_API_KEY"):
+            raise RuntimeError(
+                f"Missing API key for selected TextGrad backend: {self.backward_engine}. "
+                "Add it to .env."
+            )
+
+        if "gemini" not in backend and "groq" not in backend:
+            print(
+                f"Warning: no provider-specific API key check for TextGrad backend: "
+                f"{self.backward_engine}"
             )
 
     def _load_env_file(self) -> None:
