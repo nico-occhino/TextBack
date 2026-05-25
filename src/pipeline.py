@@ -7,6 +7,7 @@ TextGrad textual loss/backward/TGD step.
 
 import json
 from pathlib import Path
+import statistics
 
 from src.classifier import build_classifier
 from src.config import create_output_dirs
@@ -21,6 +22,10 @@ OPTIMIZATION_COLUMNS = [
     "iteration",
     "prompt",
     "textual_loss",
+    "candidate_prompt",
+    "accepted_prompt",
+    "forbidden_terms",
+    "was_rejected",
     "seed",
     "image_path",
     "top1_label",
@@ -40,7 +45,8 @@ INFERENCE_COLUMNS = [
     "top1_confidence",
     "target_confidence",
     "target_rank",
-    "success",
+    "top1_correct",
+    "top5_correct",
 ]
 
 
@@ -114,18 +120,19 @@ class TextBackPipeline:
                 top_k=int(self.experiment.get("top_k", 5)),
             )
 
-            updated_prompt, textual_loss = self.textgrad_optimizer.step(
+            step_result = self.textgrad_optimizer.step(
                 prompt_variable,
                 optimizer,
                 target_class,
                 classifier_result,
             )
+            updated_prompt = step_result["accepted_prompt"]
 
             self._log_optimization_step(
                 target_class,
                 iteration,
                 prompt,
-                textual_loss,
+                step_result,
                 seed,
                 image_path,
                 classifier_result,
@@ -158,10 +165,11 @@ class TextBackPipeline:
         self._reset_inference_logs()
         final_prompts = self._load_final_prompts()
         activation_rates = {}
+        inference_summary = {}
 
         for target_class, prompt in final_prompts.items():
             print(f"Running inference for: {target_class}")
-            successes = 0
+            class_results = []
             n_images = int(self.experiment["n_inference_images"])
 
             for image_index in range(n_images):
@@ -175,8 +183,12 @@ class TextBackPipeline:
                     top_k=int(self.experiment.get("top_k", 5)),
                 )
 
-                success = classifier_result["target_rank"] == 1
-                successes += int(success)
+                top1_correct = classifier_result["target_rank"] == 1
+                top5_correct = (
+                    classifier_result["target_rank"] is not None
+                    and classifier_result["target_rank"] <= 5
+                )
+                class_results.append(classifier_result)
                 self._log_inference_result(
                     target_class,
                     image_index,
@@ -184,12 +196,16 @@ class TextBackPipeline:
                     seed,
                     image_path,
                     classifier_result,
-                    success,
+                    top1_correct,
+                    top5_correct,
                 )
 
-            activation_rates[target_class] = successes / n_images if n_images > 0 else 0.0
+            summary = self._summarize_inference_results(class_results)
+            inference_summary[target_class] = summary
+            activation_rates[target_class] = summary["top1_activation_rate"]
 
         write_json(Path(self.paths["results_dir"]) / "activation_rates.json", activation_rates)
+        write_json(Path(self.paths["results_dir"]) / "inference_summary.json", inference_summary)
         return activation_rates
 
     def _optimization_image_path(self, target_class: str, iteration: int) -> Path:
@@ -209,7 +225,7 @@ class TextBackPipeline:
         target_class: str,
         iteration: int,
         prompt: str,
-        textual_loss: str,
+        step_result: dict,
         seed: int,
         image_path: Path,
         classifier_result: dict,
@@ -219,7 +235,11 @@ class TextBackPipeline:
             "target_class": target_class,
             "iteration": iteration,
             "prompt": prompt,
-            "textual_loss": textual_loss,
+            "textual_loss": step_result["textual_loss"],
+            "candidate_prompt": step_result["candidate_prompt"],
+            "accepted_prompt": step_result["accepted_prompt"],
+            "forbidden_terms": step_result["forbidden_terms"],
+            "was_rejected": step_result["was_rejected"],
             "seed": seed,
             "image_path": str(image_path),
             "top1_label": classifier_result["top1_label"],
@@ -241,7 +261,8 @@ class TextBackPipeline:
         seed: int,
         image_path: Path,
         classifier_result: dict,
-        success: bool,
+        top1_correct: bool,
+        top5_correct: bool,
     ) -> None:
         """Save one inference image result to CSV."""
         row = {
@@ -254,14 +275,19 @@ class TextBackPipeline:
             "top1_confidence": classifier_result["top1_confidence"],
             "target_confidence": classifier_result["target_confidence"],
             "target_rank": classifier_result["target_rank"],
-            "success": success,
+            "top1_correct": top1_correct,
+            "top5_correct": top5_correct,
         }
 
         append_csv_row(Path(self.paths["results_dir"]) / "inference_results.csv", row, INFERENCE_COLUMNS)
 
     def _save_final_prompts(self, final_prompts: dict[str, str]) -> None:
         """Save final prompts after optimization."""
-        write_json(Path(self.paths["results_dir"]) / "final_prompts.json", final_prompts)
+        cleaned_prompts = {
+            target_class: self.textgrad_optimizer.clean_final_prompt(prompt)
+            for target_class, prompt in final_prompts.items()
+        }
+        write_json(Path(self.paths["results_dir"]) / "final_prompts.json", cleaned_prompts)
 
     def _reset_optimization_logs(self) -> None:
         """Remove old optimization outputs before a new run."""
@@ -274,10 +300,46 @@ class TextBackPipeline:
     def _reset_inference_logs(self) -> None:
         """Remove old inference outputs before a new run."""
         results_dir = Path(self.paths["results_dir"])
-        for file_name in ["inference_results.csv", "activation_rates.json", "inference_metrics.json"]:
+        for file_name in [
+            "inference_results.csv",
+            "activation_rates.json",
+            "inference_summary.json",
+            "inference_metrics.json",
+        ]:
             path = results_dir / file_name
             if path.exists():
                 path.unlink()
+
+    def _summarize_inference_results(self, results: list[dict]) -> dict:
+        """Compute class-level inference metrics from classifier outputs."""
+        if not results:
+            return {
+                "top1_activation_rate": 0.0,
+                "top5_activation_rate": 0.0,
+                "mean_target_confidence": 0.0,
+                "median_target_confidence": 0.0,
+                "mean_target_rank": None,
+            }
+
+        top1_hits = [result["target_rank"] == 1 for result in results]
+        top5_hits = [
+            result["target_rank"] is not None and result["target_rank"] <= 5
+            for result in results
+        ]
+        confidences = [float(result["target_confidence"]) for result in results]
+        valid_ranks = [
+            int(result["target_rank"])
+            for result in results
+            if result["target_rank"] is not None
+        ]
+
+        return {
+            "top1_activation_rate": sum(top1_hits) / len(results),
+            "top5_activation_rate": sum(top5_hits) / len(results),
+            "mean_target_confidence": statistics.mean(confidences),
+            "median_target_confidence": statistics.median(confidences),
+            "mean_target_rank": statistics.mean(valid_ranks) if valid_ranks else None,
+        }
 
     def _load_final_prompts(self) -> dict[str, str]:
         """Load prompts saved by run_optimization()."""

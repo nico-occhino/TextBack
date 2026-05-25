@@ -17,16 +17,18 @@ FORBIDDEN_TERMS = {
 }
 
 
-def clean_prompt(prompt: str) -> str:
-    """Normalize an image-generation prompt without shortening it.
+def clean_prompt(prompt: str, max_prompt_words: int = 55) -> str:
+    """Normalize and cap an image-generation prompt.
 
     Args:
         prompt: Raw prompt text returned by TextGrad or another LLM.
+        max_prompt_words: Maximum number of words kept for Stable Diffusion.
 
     Returns:
-        Prompt with whitespace cleaned.
+        Prompt with whitespace cleaned and capped by word count.
     """
-    return " ".join(prompt.strip().replace("\n", " ").split())
+    words = prompt.strip().replace("\n", " ").split()
+    return " ".join(words[:max_prompt_words])
 
 
 def contains_forbidden_terms(prompt: str, target_class: str) -> list[str]:
@@ -61,6 +63,7 @@ class TextGradPromptOptimizer:
         self.cache = bool(config["textgrad"].get("cache", True))
         self.sleep_seconds_after_step = int(config["textgrad"].get("sleep_seconds_after_step", 20))
         self.max_retries_on_rate_limit = int(config["textgrad"].get("max_retries_on_rate_limit", 3))
+        self.max_prompt_words = int(config["textgrad"].get("max_prompt_words", 55))
         self._check_api_key()
 
         import textgrad as tg
@@ -95,6 +98,10 @@ class TextGradPromptOptimizer:
     def make_optimizer(self, prompt_variable):
         """Create one persistent TGD optimizer for a prompt variable."""
         return self.tg.TGD(parameters=[prompt_variable])
+
+    def clean_final_prompt(self, prompt: str) -> str:
+        """Clean and cap a prompt before saving it."""
+        return clean_prompt(prompt, self.max_prompt_words)
 
     def build_loss_instruction(self, target_class: str, classifier_result: dict) -> str:
         """Build a natural-language loss from classifier feedback.
@@ -142,23 +149,35 @@ class TextGradPromptOptimizer:
             Updated prompt text and textual loss/feedback string.
         """
         loss_instruction = self.build_loss_instruction(target_class, classifier_result)
-        previous_prompt = clean_prompt(self._value_of(prompt_variable))
+        previous_prompt = clean_prompt(self._value_of(prompt_variable), self.max_prompt_words)
 
         # tg.TextLoss turns classifier feedback into a textual loss function.
         loss_fn = self.tg.TextLoss(loss_instruction)
 
         loss = self._run_textgrad_update_with_retries(loss_fn, prompt_variable, optimizer)
 
-        candidate_prompt = clean_prompt(self._value_of(prompt_variable))
+        candidate_prompt = clean_prompt(self._value_of(prompt_variable), self.max_prompt_words)
         textual_loss = self._value_of(loss)
         forbidden_terms = contains_forbidden_terms(candidate_prompt, target_class)
         if forbidden_terms:
             self._set_value(prompt_variable, previous_prompt)
-            rejected_terms = ", ".join(forbidden_terms)
-            return previous_prompt, f"{textual_loss} [REJECTED: forbidden terms: {rejected_terms}]"
+            forbidden_text = ", ".join(forbidden_terms)
+            return {
+                "accepted_prompt": previous_prompt,
+                "candidate_prompt": candidate_prompt,
+                "textual_loss": f"{textual_loss} [REJECTED forbidden_terms={forbidden_text}]",
+                "forbidden_terms": forbidden_text,
+                "was_rejected": True,
+            }
 
         self._set_value(prompt_variable, candidate_prompt)
-        return candidate_prompt, textual_loss
+        return {
+            "accepted_prompt": candidate_prompt,
+            "candidate_prompt": candidate_prompt,
+            "textual_loss": textual_loss,
+            "forbidden_terms": "",
+            "was_rejected": False,
+        }
 
     def _run_textgrad_update_with_retries(self, loss_fn, prompt_variable, optimizer):
         """Run loss/backward/step with simple rate-limit retries."""

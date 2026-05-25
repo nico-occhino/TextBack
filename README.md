@@ -33,6 +33,11 @@ or direct object parts, the update is rejected and the previous prompt is kept.
 Inference uses different deterministic seeds for each generated sample.  This
 keeps samples reproducible while avoiding identical generated images.
 
+Stable Diffusion 1.5 uses a CLIP text encoder with a short context window, so
+optimized prompts are capped to avoid tokenizer truncation.  Inference reports
+top-1 activation, top-5 activation, and target confidence because top-1 alone is
+a strict metric for shortcut probing.
+
 ## RobustBench Install
 
 Install RobustBench with:

@@ -29,6 +29,7 @@ textual_optimizer:
 textgrad:
   backward_engine: "experimental:groq/openai/gpt-oss-20b"
   cache: true
+  max_prompt_words: 55
   sleep_seconds_after_step: 35
   max_retries_on_rate_limit: 5
 
