@@ -9,15 +9,15 @@ import time
 
 
 FORBIDDEN_TERMS = {
-    "tabby": ["tabby", "cat", "kitten", "feline", "whisker", "paw", "tail"],
-    "sports car": ["sports car", "sport car", "car", "vehicle", "wheel", "tire", "hood", "headlight"],
-    "cowboy hat": ["cowboy hat", "hat", "brim", "crown"],
-    "volcano": ["volcano", "lava", "crater", "eruption"],
-    "book jacket": ["book jacket", "book", "cover", "spine", "title"],
+    "tabby": ["tabby", "cat", "kitten", "feline"],
+    "sports car": ["sports car", "sport car", "car", "vehicle", "automobile"],
+    "cowboy hat": ["cowboy hat"],
+    "volcano": ["volcano"],
+    "book jacket": ["book jacket", "book"],
 }
 
 
-def clean_prompt(prompt: str, max_prompt_words: int = 55) -> str:
+def clean_prompt(prompt: str, max_prompt_words: int = 60) -> str:
     """Normalize and cap an image-generation prompt.
 
     Args:
@@ -63,7 +63,7 @@ class TextGradPromptOptimizer:
         self.cache = bool(config["textgrad"].get("cache", True))
         self.sleep_seconds_after_step = int(config["textgrad"].get("sleep_seconds_after_step", 20))
         self.max_retries_on_rate_limit = int(config["textgrad"].get("max_retries_on_rate_limit", 3))
-        self.max_prompt_words = int(config["textgrad"].get("max_prompt_words", 55))
+        self.max_prompt_words = int(config["textgrad"].get("max_prompt_words", 60))
         self._check_api_key()
 
         import textgrad as tg
@@ -121,7 +121,7 @@ class TextGradPromptOptimizer:
             )
 
         return (
-            "You are optimizing a text-to-image prompt for shortcut discovery.\n"
+            "You are optimizing a text-to-image prompt for name-free cue optimization.\n"
             f"Target class: {target_class}\n"
             f"Top-1 prediction: {classifier_result['top1_label']} "
             f"with confidence {classifier_result['top1_confidence']:.4f}\n"
@@ -129,11 +129,11 @@ class TextGradPromptOptimizer:
             f"Target rank: {classifier_result['target_rank']}\n"
             "Top-k predictions:\n"
             + "\n".join(topk_lines)
-            + "\nThe improved image-generation prompt must NOT mention the target class, "
-            "direct object names, or direct object parts. Search for indirect shortcut "
-            "cues: background, texture, color, lighting, scene context, co-occurring "
-            "objects, shapes, and materials that may spuriously activate the classifier. "
-            "Return only the improved image-generation prompt."
+            + "\nDo not use the exact target class name or close synonyms. "
+            "Improve the prompt using visual attributes, textures, materials, colors, "
+            "shapes, background context, and co-occurring cues. The goal is to increase "
+            "classifier activation while keeping the prompt name-free. Return only the "
+            "improved image-generation prompt. Maximum 60 words."
         )
 
     def step(self, prompt_variable, optimizer, target_class: str, classifier_result: dict) -> tuple[str, str]:

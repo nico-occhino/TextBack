@@ -4,9 +4,11 @@ TextBack is an Advanced Deep Learning oral exam project for **Project 17:
 Textual Backward**.  The goal is to find shortcut cues and spurious visual
 features that activate a robust pretrained ImageNet classifier.
 
-This final version is **shortcut-only**.  The image-generation prompt must not
-directly name the target class.  The target class is used only inside the
-TextGrad textual loss and the classifier feedback.
+This final version uses **name-free cue optimization**.  The image-generation
+prompt must not directly name the target class or close synonyms, but it may use
+visual attributes, textures, materials, shapes, backgrounds, and contextual cues.
+The target class is used only inside the TextGrad textual loss and classifier
+feedback.
 
 ## Final Pipeline
 
@@ -17,7 +19,7 @@ TextGrad prompt variable
   -> TextGrad TextLoss from classifier feedback
   -> loss.backward()
   -> TextGrad TGD optimizer.step()
-  -> updated shortcut prompt
+  -> updated name-free cue prompt
 ```
 
 The final visual classifier is `Salman2020Do_R50` from RobustBench.  This is a
@@ -26,9 +28,9 @@ classifier for this project.
 
 ## Methodological Guardrails
 
-TextBack is shortcut-only, so target leakage is a real risk.  The optimizer uses
-hard lexical guardrails: if TextGrad proposes a prompt containing target labels
-or direct object parts, the update is rejected and the previous prompt is kept.
+TextBack is name-free, so target leakage is a real risk.  The optimizer uses
+hard lexical guardrails: if TextGrad proposes a prompt containing exact target
+labels or close synonyms, the update is rejected and the previous prompt is kept.
 
 Inference uses different deterministic seeds for each generated sample.  This
 keeps samples reproducible while avoiding identical generated images.
@@ -36,7 +38,7 @@ keeps samples reproducible while avoiding identical generated images.
 Stable Diffusion 1.5 uses a CLIP text encoder with a short context window, so
 optimized prompts are capped to avoid tokenizer truncation.  Inference reports
 top-1 activation, top-5 activation, and target confidence because top-1 alone is
-a strict metric for shortcut probing.
+a strict metric for cue-based activation probing.
 
 ## RobustBench Install
 
@@ -137,7 +139,7 @@ Outputs are written under `results/`.
 configs/default.yaml             experiment settings
 src/classifier.py                RobustBench Salman2020Do_R50 classifier
 src/image_generator.py           Diffusers generator
-src/textgrad_optimizer.py        TextGrad shortcut prompt optimization
+src/textgrad_optimizer.py        TextGrad name-free cue optimization
 src/pipeline.py                  optimization and inference orchestration
 scripts/check_environment.py     dependency and key checker
 scripts/list_imagenet_classes.py ImageNet label lookup

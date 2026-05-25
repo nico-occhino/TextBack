@@ -141,7 +141,7 @@ class TextBackPipeline:
         return updated_prompt
 
     def _make_initial_prompt(self, target_class: str) -> str:
-        """Create a shortcut-search prompt that does not name the target class.
+        """Create a name-free cue prompt for the target class.
 
         Args:
             target_class: Hidden classifier target, not included in the prompt.
@@ -149,11 +149,34 @@ class TextBackPipeline:
         Returns:
             Initial image-generation prompt.
         """
-        return (
-            "A realistic photographic scene containing indirect visual cues such as "
-            "textures, colors, lighting, backgrounds, and contextual patterns that "
-            "may be statistically associated with the hidden target category, without "
-            "showing or naming the target object."
+        prompts = {
+            "tabby": (
+                "Warm indoor scene with orange-black striped soft textures, plush "
+                "curled form, domestic furniture, shallow depth of field, amber daylight."
+            ),
+            "sports car": (
+                "Low glossy aerodynamic silhouette, racetrack asphalt, metallic red "
+                "reflections, carbon-fiber texture, showroom lighting, sharp "
+                "motion-oriented composition."
+            ),
+            "cowboy hat": (
+                "Dusty western street, wide curved leather brim silhouette, saloon wood, "
+                "horse saddle, desert cactus, warm sunset, weathered brown material."
+            ),
+            "volcano": (
+                "Towering mountain peak, dark ash cloud, smoky haze, black basalt rock, "
+                "glowing orange cracks, dramatic rugged landscape."
+            ),
+            "book jacket": (
+                "Upright rectangular printed panel, glossy paper texture, bold "
+                "typography-like blocks, colorful geometric layout, display table, "
+                "studio lighting."
+            ),
+        }
+        return prompts.get(
+            target_class,
+            "Realistic photographic scene with distinctive textures, materials, colors, "
+            "shapes, background context, and co-occurring visual cues.",
         )
 
     def run_inference(self) -> dict[str, float]:
