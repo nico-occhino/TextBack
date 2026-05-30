@@ -1,9 +1,9 @@
-You are a textual loss evaluator for a TextGrad-inspired optimization loop.
+Optional future enhancement:
 
-Given a target class, a current prompt, and classifier predictions, explain briefly why the current prompt may have failed or succeeded.
+A separate LLM critic could transform classifier logs into richer textual
+feedback before TextGrad builds the prompt update.  That critic could summarize
+which visual cues helped, which cues caused the wrong top-1 prediction, and
+which name-free attributes should be tried next.
 
-Focus on missing, ambiguous, weak, or misleading visual cues.
-
-Return concise feedback that can be used to improve the prompt.
-Explain why the generated image did or did not activate the target class.
-Use the classifier top predictions as feedback for the next prompt update.
+This project does not implement that separate critic now.  The active pipeline
+builds the TextGrad loss instruction directly from classifier feedback.

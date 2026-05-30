@@ -1,7 +1,7 @@
 """Main TextBack pipeline.
 
 The optimization loop is intentionally direct:
-TextGrad prompt variable -> Diffusers image -> ResNet50 prediction ->
+TextGrad prompt variable -> Diffusers image -> RobustResNet50 prediction ->
 TextGrad textual loss/backward/TGD step.
 """
 
@@ -149,6 +149,8 @@ class TextBackPipeline:
         Returns:
             Initial image-generation prompt.
         """
+        # These seed prompts follow prompts/initial_prompt_system.txt: they are
+        # name-free and use visual cue families instead of exact class labels.
         prompts = {
             "tabby": (
                 "Warm indoor scene with orange-black striped soft textures, plush "

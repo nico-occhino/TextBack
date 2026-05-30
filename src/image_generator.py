@@ -145,9 +145,10 @@ class LocalDiffusersGenerator:
 
     def _warn_if_almost_black(self, image) -> None:
         """Warn when a generated image looks almost entirely black."""
+        from PIL import ImageStat
+
         grayscale = image.convert("L")
-        pixels = list(grayscale.getdata())
-        mean_pixel = sum(pixels) / len(pixels)
+        mean_pixel = ImageStat.Stat(grayscale).mean[0]
 
         if mean_pixel < 2:
             print(

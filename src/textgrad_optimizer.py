@@ -5,6 +5,7 @@ TextGrad API with a LiteLLM backward engine configured from YAML.
 """
 
 import os
+from pathlib import Path
 import time
 
 
@@ -32,7 +33,7 @@ def clean_prompt(prompt: str, max_prompt_words: int = 60) -> str:
 
 
 def contains_forbidden_terms(prompt: str, target_class: str) -> list[str]:
-    """Find target-leaking terms in a candidate shortcut prompt.
+    """Find target-leaking terms in a candidate name-free cue prompt.
 
     Args:
         prompt: Candidate image-generation prompt.
@@ -64,6 +65,10 @@ class TextGradPromptOptimizer:
         self.sleep_seconds_after_step = int(config["textgrad"].get("sleep_seconds_after_step", 20))
         self.max_retries_on_rate_limit = int(config["textgrad"].get("max_retries_on_rate_limit", 3))
         self.max_prompt_words = int(config["textgrad"].get("max_prompt_words", 60))
+        self.prompts_dir = Path(config["paths"].get("prompts_dir", "prompts"))
+        self.initial_prompt_system = self._load_prompt_file("initial_prompt_system.txt")
+        self.refinement_prompt_system = self._load_prompt_file("refinement_prompt_system.txt")
+        self.textual_loss_system = self._load_prompt_file("textual_loss_system.txt")
         self._check_api_key()
 
         import textgrad as tg
@@ -73,6 +78,12 @@ class TextGradPromptOptimizer:
         # TextGrad uses this engine during loss.backward(), where textual
         # gradients are produced by the LLM.
         self._set_backward_engine()
+        self.loss_instruction_variable = self.tg.Variable(
+            "Initial TextBack loss instruction.",
+            requires_grad=False,
+            role_description="dynamic textual loss instruction built from classifier feedback",
+        )
+        self.loss_fn = self.tg.TextLoss(self.loss_instruction_variable)
 
     def make_prompt_variable(self, initial_prompt: str, target_class: str):
         """Create the optimizable TextGrad prompt variable.
@@ -121,7 +132,8 @@ class TextGradPromptOptimizer:
             )
 
         return (
-            "You are optimizing a text-to-image prompt for name-free cue optimization.\n"
+            self.refinement_prompt_system
+            + "\n\nLive classifier feedback:\n"
             f"Target class: {target_class}\n"
             f"Top-1 prediction: {classifier_result['top1_label']} "
             f"with confidence {classifier_result['top1_confidence']:.4f}\n"
@@ -129,14 +141,12 @@ class TextGradPromptOptimizer:
             f"Target rank: {classifier_result['target_rank']}\n"
             "Top-k predictions:\n"
             + "\n".join(topk_lines)
-            + "\nDo not use the exact target class name or close synonyms. "
-            "Improve the prompt using visual attributes, textures, materials, colors, "
-            "shapes, background context, and co-occurring cues. The goal is to increase "
-            "classifier activation while keeping the prompt name-free. Return only the "
-            "improved image-generation prompt. Maximum 60 words."
+            + "\nConstraint reminder: The improved image-generation prompt must not "
+            "contain the exact target class name or close synonyms.\n"
+            f"Maximum word reminder: return at most {self.max_prompt_words} words."
         )
 
-    def step(self, prompt_variable, optimizer, target_class: str, classifier_result: dict) -> tuple[str, str]:
+    def step(self, prompt_variable, optimizer, target_class: str, classifier_result: dict) -> dict:
         """Run one TextGrad optimization step.
 
         Args:
@@ -146,15 +156,15 @@ class TextGradPromptOptimizer:
             classifier_result: Output dictionary from classifier.predict().
 
         Returns:
-            Updated prompt text and textual loss/feedback string.
+            Dictionary with accepted/candidate prompt text and rejection details.
         """
         loss_instruction = self.build_loss_instruction(target_class, classifier_result)
         previous_prompt = clean_prompt(self._value_of(prompt_variable), self.max_prompt_words)
 
-        # tg.TextLoss turns classifier feedback into a textual loss function.
-        loss_fn = self.tg.TextLoss(loss_instruction)
-
-        loss = self._run_textgrad_update_with_retries(loss_fn, prompt_variable, optimizer)
+        # The TextLoss node stays persistent; only its instruction variable
+        # changes as new classifier feedback arrives.
+        self._set_value(self.loss_instruction_variable, loss_instruction)
+        loss = self._run_textgrad_update_with_retries(self.loss_fn, prompt_variable, optimizer)
 
         candidate_prompt = clean_prompt(self._value_of(prompt_variable), self.max_prompt_words)
         textual_loss = self._value_of(loss)
@@ -265,6 +275,15 @@ class TextGradPromptOptimizer:
             # The real environment should install python-dotenv.  This fallback
             # still allows API keys provided by the shell to work.
             pass
+
+    def _load_prompt_file(self, file_name: str) -> str:
+        """Read one prompt file from the configured prompts directory."""
+        path = self.prompts_dir / file_name
+        if not path.exists():
+            display_path = (self.prompts_dir / file_name).as_posix()
+            raise RuntimeError(f"Missing prompt file: {display_path}")
+
+        return path.read_text(encoding="utf-8").strip()
 
     def _value_of(self, variable) -> str:
         """Read the text value from a TextGrad object across versions."""

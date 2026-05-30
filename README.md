@@ -1,46 +1,85 @@
 # TextBack
 
 TextBack is an Advanced Deep Learning oral exam project for **Project 17:
-Textual Backward**.  The goal is to find shortcut cues and spurious visual
-features that activate a robust pretrained ImageNet classifier.
+Textual Backward**.  It uses TextGrad to optimize text-to-image prompts that
+search for name-free visual cues capable of activating a robust ImageNet
+classifier.
 
-This final version uses **name-free cue optimization**.  The image-generation
-prompt must not directly name the target class or close synonyms, but it may use
-visual attributes, textures, materials, shapes, backgrounds, and contextual cues.
-The target class is used only inside the TextGrad textual loss and classifier
-feedback.
+The goal is not to prove causality.  The goal is to discover candidate
+textures, materials, shapes, colors, backgrounds, and co-occurring cues that may
+act like shortcut features for a fixed classifier.
 
 ## Final Pipeline
 
 ```text
 TextGrad prompt variable
-  -> local Diffusers image generation
-  -> RobustBench Salman2020Do_R50 ImageNet classifier
+  -> Stable Diffusion image generation
+  -> RobustBench Salman2020Do_R50 classifier prediction
   -> TextGrad TextLoss from classifier feedback
   -> loss.backward()
   -> TextGrad TGD optimizer.step()
   -> updated name-free cue prompt
+  -> inference activation maximization
 ```
 
-The final visual classifier is `Salman2020Do_R50` from RobustBench.  This is a
-robust ImageNet ResNet-50 model.  Torchvision ResNet50 is no longer the final
-classifier for this project.
+Stable Diffusion and RobustBench are fixed black-box forward components.  Only
+the prompt changes.  TextGrad provides the PyTorch-like pieces: `Variable`,
+`TextLoss`, `backward()`, and `TGD.step()`.  The gradient is natural-language
+feedback, not a numerical derivative.
 
-## Methodological Guardrails
+## Prompt Methodology
 
-TextBack is name-free, so target leakage is a real risk.  The optimizer uses
-hard lexical guardrails: if TextGrad proposes a prompt containing exact target
-labels or close synonyms, the update is rejected and the previous prompt is kept.
+The workflow is **name-free cue optimization**.  Image-generation prompts must
+avoid exact target class names and close synonyms, but they may use visual
+attributes, textures, materials, shapes, colors, context, and co-occurring cues.
+Hard lexical guardrails reject TextGrad updates that leak target names.
 
-Inference uses different deterministic seeds for each generated sample.  This
-keeps samples reproducible while avoiding identical generated images.
+Prompt files live in `prompts/`:
 
-Stable Diffusion 1.5 uses a CLIP text encoder with a short context window, so
-optimized prompts are capped to avoid tokenizer truncation.  Inference reports
-top-1 activation, top-5 activation, and target confidence because top-1 alone is
-a strict metric for cue-based activation probing.
+```text
+prompts/initial_prompt_system.txt      methodology for initial seed prompts
+prompts/refinement_prompt_system.txt   active TextGrad refinement instruction
+prompts/textual_loss_system.txt        future-work note, not active
+```
 
-## RobustBench Install
+Initial prompts are deterministic class-specific seed prompts in
+`src/pipeline.py`.  They are aligned with `initial_prompt_system.txt` for
+reproducibility and easy oral-exam explanation.  `refinement_prompt_system.txt`
+is loaded and used inside the TextGrad loss instruction.  `textual_loss_system`
+documents a possible future separate critic but is not implemented.
+
+Stable Diffusion 1.5 has a short CLIP text context window, so prompts are capped
+by `textgrad.max_prompt_words`.
+
+## Configs
+
+`configs/default.yaml` is for development:
+
+```text
+n_optimization_steps: 3
+n_inference_images: 20
+```
+
+`configs/final.yaml` is the final/spec-compliant run:
+
+```text
+n_optimization_steps: 5
+n_inference_images: 100
+max_prompt_words: 45
+```
+
+Both configs use:
+
+```text
+TextGrad backend: experimental:groq/openai/gpt-oss-20b
+Image generator: runwayml/stable-diffusion-v1-5
+Classifier: RobustBench Salman2020Do_R50
+```
+
+## RobustBench Classifier
+
+The visual classifier is RobustBench `Salman2020Do_R50`, a robust ImageNet
+ResNet-50 model.  Torchvision ResNet50 is no longer the final classifier.
 
 Install RobustBench with:
 
@@ -50,12 +89,12 @@ pip install "gdown>=5.2.0"
 pip install git+https://github.com/RobustBench/robustbench.git
 ```
 
-If RobustBench installation or model loading fails, the project environment is
-not ready for the final classifier.
+The first model load downloads the checkpoint under `models/imagenet/Linf/`.
+The `models/` folder is ignored by Git.
 
 ## API Key
 
-Create `.env` manually from `.env.example` and add your Groq key:
+Create `.env` manually from `.env.example`:
 
 ```text
 GROQ_API_KEY=your_real_key_here
@@ -64,35 +103,20 @@ GROQ_API_KEY=your_real_key_here
 Never commit real API keys.  ChatGPT Plus does not include API usage; API keys
 and billing are separate.
 
-The working TextGrad backend in the default config is:
-
-```text
-experimental:groq/openai/gpt-oss-20b
-```
-
 ## Environment Check
 
 ```bash
 python scripts/check_environment.py
 ```
 
-This checks Python, torch/CUDA, Groq key presence, TextGrad, Diffusers, and
-RobustBench.
+This checks Python, torch/CUDA, Groq key presence, RobustBench imports,
+TextGrad, and Diffusers.  It does not load the full RobustBench checkpoint.
 
-## ImageNet Labels
-
-Target classes and subset folder names must match Torchvision ImageNet labels
-exactly:
-
-```bash
-python scripts/list_imagenet_classes.py --query bus
-```
-
-## Real ImageNet Subset
+## ImageNet Subset Baseline
 
 Torchvision can download model weights, but it does **not** automatically
-download ImageNet / ILSVRC2012.  The real 5x50 subset is a baseline for
-evaluation only, not training.
+download ImageNet / ILSVRC2012.  The real 5x50 subset is a classifier sanity
+check baseline, not training data.
 
 Expected structure:
 
@@ -111,34 +135,45 @@ data/imagenet_subset/
     001.png
 ```
 
-Evaluate the real subset:
+Useful commands:
 
 ```bash
+python scripts/list_imagenet_classes.py --query bus
 python scripts/evaluate_real_subset.py --config configs/default.yaml
 ```
 
-## TextBack Runs
+## Running TextBack
 
-Run prompt optimization:
+Development run:
 
 ```bash
 python scripts/run_optimization.py --config configs/default.yaml
-```
-
-Run inference from the final prompts:
-
-```bash
 python scripts/run_inference.py --config configs/default.yaml
 ```
 
-Outputs are written under `results/`.
+Final run:
+
+```bash
+python scripts/run_optimization.py --config configs/final.yaml
+python scripts/run_inference.py --config configs/final.yaml
+```
+
+Inspect saved results:
+
+```bash
+python scripts/inspect_results.py --config configs/default.yaml
+```
+
+The main metric is activation maximization rate.  Inference summary metrics
+such as top-5 activation and mean target confidence are diagnostics.
 
 ## Main Files
 
 ```text
-configs/default.yaml             experiment settings
+configs/default.yaml             lightweight development settings
+configs/final.yaml               final/spec-compliant settings
 src/classifier.py                RobustBench Salman2020Do_R50 classifier
-src/image_generator.py           Diffusers generator
+src/image_generator.py           Diffusers image generator
 src/textgrad_optimizer.py        TextGrad name-free cue optimization
 src/pipeline.py                  optimization and inference orchestration
 scripts/check_environment.py     dependency and key checker
@@ -146,4 +181,5 @@ scripts/list_imagenet_classes.py ImageNet label lookup
 scripts/evaluate_real_subset.py  real ImageNet subset baseline evaluation
 scripts/run_optimization.py      TextBack optimization entry point
 scripts/run_inference.py         TextBack inference entry point
+scripts/inspect_results.py       compact result summary
 ```

@@ -31,6 +31,9 @@ class RobustBenchImageNetClassifier:
             weights = ResNet50_Weights.DEFAULT
             self.preprocess = weights.transforms()
             self.labels = weights.meta["categories"]
+            self.label_to_index = {
+                label: index for index, label in enumerate(self.labels)
+            }
 
             self.model = load_model(
                 model_name=model_name,
@@ -84,13 +87,15 @@ class RobustBenchImageNetClassifier:
 
     def _target_metrics(self, probabilities, target_class: str) -> tuple[float, int | None]:
         """Compute confidence and 1-based rank for the target class."""
-        if target_class not in self.labels:
+        target_index = self.label_to_index.get(target_class)
+        if target_index is None:
             return 0.0, None
 
-        target_index = self.labels.index(target_class)
-        target_confidence = float(probabilities[target_index].item())
-        sorted_indices = self.torch.argsort(probabilities, descending=True).tolist()
-        return target_confidence, sorted_indices.index(target_index) + 1
+        target_probability = probabilities[target_index]
+        target_confidence = float(target_probability.item())
+        # Rank is one plus the number of classes with probability greater than the target probability.
+        target_rank = int((probabilities > target_probability).sum().item()) + 1
+        return target_confidence, target_rank
 
 
 def build_classifier(config: dict) -> RobustBenchImageNetClassifier:

@@ -1,4 +1,4 @@
-"""Evaluate ResNet50 on a manually prepared ImageNet subset.
+"""Evaluate the RobustBench classifier on a manually prepared ImageNet subset.
 
 Expected folder layout:
 

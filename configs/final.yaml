@@ -19,8 +19,8 @@ experiment:
     - "cowboy hat"
     - "volcano"
     - "book jacket"
-  n_optimization_steps: 3
-  n_inference_images: 20
+  n_optimization_steps: 5
+  n_inference_images: 100
   top_k: 5
 
 textual_optimizer:
