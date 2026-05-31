@@ -51,6 +51,11 @@ documents a possible future separate critic but is not implemented.
 Stable Diffusion 1.5 has a short CLIP text context window, so prompts are capped
 by `textgrad.max_prompt_words`.
 
+TextGrad updates are not guaranteed to improve activation monotonically.  During
+optimization, TextBack therefore keeps the prompt with the highest observed
+target confidence and uses that best-so-far prompt for final inference.  This is
+analogous to saving the best checkpoint during model training.
+
 ## Configs
 
 `configs/default.yaml` is for development:

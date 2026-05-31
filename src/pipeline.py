@@ -71,6 +71,7 @@ class TextBackPipeline:
         self.classifier = build_classifier(config)
         self.image_generator = build_image_generator(config)
         self.textgrad_optimizer = TextGradPromptOptimizer(config)
+        self.best_prompt_metadata = {}
 
     def run_optimization(self) -> dict[str, str]:
         """Optimize prompts for all configured target classes.
@@ -80,6 +81,7 @@ class TextBackPipeline:
         """
         self._reset_optimization_logs()
         final_prompts = {}
+        self.best_prompt_metadata = {}
 
         for target_class in self.experiment["target_classes"]:
             print(f"Optimizing prompt for: {target_class}")
@@ -106,7 +108,10 @@ class TextBackPipeline:
         initial_prompt = self._make_initial_prompt(target_class)
         prompt_variable = self.textgrad_optimizer.make_prompt_variable(initial_prompt, target_class)
         optimizer = self.textgrad_optimizer.make_optimizer(prompt_variable)
-        updated_prompt = self._textgrad_value(prompt_variable)
+        best_prompt = initial_prompt
+        best_score = -1.0
+        best_iteration = -1
+        best_rank = None
 
         for iteration in range(int(self.experiment["n_optimization_steps"])):
             prompt = self._textgrad_value(prompt_variable)
@@ -120,13 +125,19 @@ class TextBackPipeline:
                 top_k=int(self.experiment.get("top_k", 5)),
             )
 
+            current_score = float(classifier_result["target_confidence"])
+            if current_score > best_score:
+                best_score = current_score
+                best_prompt = prompt
+                best_iteration = iteration
+                best_rank = classifier_result["target_rank"]
+
             step_result = self.textgrad_optimizer.step(
                 prompt_variable,
                 optimizer,
                 target_class,
                 classifier_result,
             )
-            updated_prompt = step_result["accepted_prompt"]
 
             self._log_optimization_step(
                 target_class,
@@ -138,7 +149,12 @@ class TextBackPipeline:
                 classifier_result,
             )
 
-        return updated_prompt
+        self.best_prompt_metadata[target_class] = {
+            "best_iteration": best_iteration,
+            "best_target_confidence": best_score,
+            "best_target_rank": best_rank,
+        }
+        return best_prompt
 
     def _make_initial_prompt(self, target_class: str) -> str:
         """Create a name-free cue prompt for the target class.
@@ -312,12 +328,19 @@ class TextBackPipeline:
             target_class: self.textgrad_optimizer.clean_final_prompt(prompt)
             for target_class, prompt in final_prompts.items()
         }
-        write_json(Path(self.paths["results_dir"]) / "final_prompts.json", cleaned_prompts)
+        results_dir = Path(self.paths["results_dir"])
+        write_json(results_dir / "final_prompts.json", cleaned_prompts)
+        write_json(results_dir / "best_prompt_metadata.json", self.best_prompt_metadata)
 
     def _reset_optimization_logs(self) -> None:
         """Remove old optimization outputs before a new run."""
         results_dir = Path(self.paths["results_dir"])
-        for file_name in ["final_prompts.json", "optimization_logs.csv", "optimization_logs.jsonl"]:
+        for file_name in [
+            "final_prompts.json",
+            "best_prompt_metadata.json",
+            "optimization_logs.csv",
+            "optimization_logs.jsonl",
+        ]:
             path = results_dir / file_name
             if path.exists():
                 path.unlink()

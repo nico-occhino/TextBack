@@ -31,6 +31,7 @@ def main() -> None:
     results_dir = Path(config["paths"]["results_dir"])
 
     final_prompts = _read_json(results_dir / "final_prompts.json")
+    best_prompt_metadata = _read_json(results_dir / "best_prompt_metadata.json")
     activation_rates = _read_json(results_dir / "activation_rates.json")
     inference_summary = _read_json(results_dir / "inference_summary.json")
     real_subset_summary = _read_csv(results_dir / "real_subset_summary.csv")
@@ -43,6 +44,7 @@ def main() -> None:
     _print_baseline_comparison(real_subset_summary, activation_rates)
     _print_optimization_trajectory(optimization_logs)
     _print_guardrail_counts(optimization_logs)
+    _print_best_prompt_metadata(best_prompt_metadata)
 
 
 def _read_json(path: Path):
@@ -170,6 +172,21 @@ def _print_guardrail_counts(rows: list[dict] | None) -> None:
 
     for target_class, values in counts.items():
         print(f"  {target_class}: {values['rejected']}/{values['total']} rejected")
+
+
+def _print_best_prompt_metadata(metadata) -> None:
+    """Print which optimization step produced the saved final prompt."""
+    print("\nH. Best Prompt Selection")
+    if not metadata:
+        print("  results/best_prompt_metadata.json not found")
+        return
+
+    for target_class, values in metadata.items():
+        confidence = _format_float(values.get("best_target_confidence"))
+        print(
+            f"  {target_class}: best_iteration={values.get('best_iteration')}, "
+            f"confidence={confidence}, rank={values.get('best_target_rank')}"
+        )
 
 
 def _format_float(value) -> str:
