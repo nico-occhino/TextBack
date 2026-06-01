@@ -34,7 +34,7 @@ def main() -> None:
         final_prompts = pipeline.run_optimization()
     except RuntimeError as error:
         print(str(error))
-        return
+        raise SystemExit(1) from error
 
     print("Final prompts saved to results/final_prompts.json")
     for target_class, prompt in final_prompts.items():

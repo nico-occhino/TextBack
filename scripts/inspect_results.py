@@ -31,6 +31,8 @@ def main() -> None:
     results_dir = Path(config["paths"]["results_dir"])
 
     final_prompts = _read_json(results_dir / "final_prompts.json")
+    initial_prompts = _read_json(results_dir / "initial_prompts.json")
+    initial_prompt_metadata = _read_json(results_dir / "initial_prompt_metadata.json")
     best_prompt_metadata = _read_json(results_dir / "best_prompt_metadata.json")
     activation_rates = _read_json(results_dir / "activation_rates.json")
     inference_summary = _read_json(results_dir / "inference_summary.json")
@@ -38,6 +40,8 @@ def main() -> None:
     optimization_logs = _read_csv(results_dir / "optimization_logs.csv")
 
     _print_final_prompts(final_prompts)
+    _print_initial_prompts(initial_prompts)
+    _print_initial_prompt_metadata(initial_prompt_metadata)
     _print_activation_rates(activation_rates)
     _print_inference_summary(inference_summary)
     _print_real_subset_summary(real_subset_summary)
@@ -72,6 +76,35 @@ def _print_final_prompts(final_prompts) -> None:
 
     for target_class, prompt in final_prompts.items():
         print(f"  {target_class}: {prompt}")
+
+
+def _print_initial_prompts(initial_prompts) -> None:
+    """Print cached LLM initial prompts per class."""
+    print("\nInitial LLM Prompts")
+    if not initial_prompts:
+        print("  results/initial_prompts.json not found")
+        return
+
+    for target_class, prompt in initial_prompts.items():
+        print(f"  {target_class}: {prompt}")
+
+
+def _print_initial_prompt_metadata(metadata) -> None:
+    """Print where each initial prompt came from."""
+    print("\nInitial Prompt Sources")
+    if not metadata:
+        print("  results/initial_prompt_metadata.json not found")
+        return
+
+    for target_class, values in metadata.items():
+        source = values.get("source")
+        forbidden_terms = values.get("forbidden_terms", [])
+        attempts = values.get("attempts")
+        error = values.get("error", "")
+        print(
+            f"  {target_class}: source={source}, attempts={attempts}, "
+            f"forbidden_terms={forbidden_terms}, error={error}"
+        )
 
 
 def _print_activation_rates(activation_rates) -> None:

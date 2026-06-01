@@ -28,6 +28,10 @@ def main() -> None:
     """Load config, create the pipeline, and run inference."""
     args = parse_args()
     config = load_config(args.config)
+    final_prompts_path = Path(config["paths"]["results_dir"]) / "final_prompts.json"
+    if not final_prompts_path.exists():
+        print("Missing results/final_prompts.json. Run optimization successfully before inference.")
+        raise SystemExit(1)
 
     pipeline = TextBackPipeline(config)
     activation_rates = pipeline.run_inference()

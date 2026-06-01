@@ -9,6 +9,10 @@ from pathlib import Path
 import time
 
 
+# Guardrail scope: block exact target names and close synonyms only. Do not
+# block all class-associated visual/contextual cues such as lava, ash,
+# racetrack, cactus, typography, or sofa, because those are candidate shortcut
+# cues under investigation.
 FORBIDDEN_TERMS = {
     "tabby": ["tabby", "cat", "kitten", "feline"],
     "sports car": ["sports car", "sport car", "car", "vehicle", "automobile"],
@@ -65,6 +69,15 @@ class TextGradPromptOptimizer:
         self.sleep_seconds_after_step = int(config["textgrad"].get("sleep_seconds_after_step", 20))
         self.max_retries_on_rate_limit = int(config["textgrad"].get("max_retries_on_rate_limit", 3))
         self.max_prompt_words = int(config["textgrad"].get("max_prompt_words", 60))
+        self.initial_prompt_temperature = float(
+            config["textgrad"].get("initial_prompt_temperature", 0.2)
+        )
+        self.initial_prompt_max_retries = int(
+            config["textgrad"].get("initial_prompt_max_retries", 3)
+        )
+        self.fallback_on_initial_prompt_failure = bool(
+            config["textgrad"].get("fallback_on_initial_prompt_failure", True)
+        )
         self.prompts_dir = Path(config["paths"].get("prompts_dir", "prompts"))
         self.initial_prompt_system = self._load_prompt_file("initial_prompt_system.txt")
         self.refinement_prompt_system = self._load_prompt_file("refinement_prompt_system.txt")
@@ -113,6 +126,90 @@ class TextGradPromptOptimizer:
     def clean_final_prompt(self, prompt: str) -> str:
         """Clean and cap a prompt before saving it."""
         return clean_prompt(prompt, self.max_prompt_words)
+
+    def generate_initial_prompt(self, target_class: str) -> dict:
+        """Generate one name-free initial prompt with the configured LLM.
+
+        Args:
+            target_class: Hidden ImageNet class used only for LLM guidance.
+
+        Returns:
+            Metadata dictionary containing the prompt or failure details.
+
+        Raises:
+            RuntimeError: If litellm is missing or the provider fails and
+                fallback_on_initial_prompt_failure is false.
+        """
+        try:
+            from litellm import completion
+        except ImportError as error:
+            raise RuntimeError(
+                "litellm is required for LLM initial prompt generation."
+            ) from error
+
+        max_retries = max(1, self.initial_prompt_max_retries)
+        forbidden_terms_config = FORBIDDEN_TERMS.get(target_class, [])
+        last_prompt = ""
+        last_forbidden_terms = []
+        last_error = ""
+
+        for attempt in range(1, max_retries + 1):
+            user_message = (
+                f"Target class: {target_class}\n"
+                f"Forbidden terms: {forbidden_terms_config}\n"
+                f"Attempt: {attempt}/{max_retries}\n"
+                "Generate a name-free prompt.\n"
+                "Do not use any forbidden terms.\n"
+                "Return only the prompt.\n"
+                f"Maximum {self.max_prompt_words} words."
+            )
+            try:
+                response = completion(
+                    model=self._litellm_model_name(),
+                    messages=[
+                        {"role": "system", "content": self.initial_prompt_system},
+                        {"role": "user", "content": user_message},
+                    ],
+                    temperature=self.initial_prompt_temperature,
+                )
+                prompt = clean_prompt(self._completion_text(response), self.max_prompt_words)
+            except Exception as error:
+                last_error = str(error)
+                if attempt == max_retries and not self.fallback_on_initial_prompt_failure:
+                    raise RuntimeError(
+                        "Initial LLM prompt generation failed and fallback is disabled."
+                    ) from error
+                print(
+                    f"Initial prompt attempt {attempt}/{max_retries} failed for "
+                    f"{target_class}: {error}"
+                )
+                continue
+
+            forbidden_terms = contains_forbidden_terms(prompt, target_class)
+            if not forbidden_terms:
+                return {
+                    "prompt": prompt,
+                    "source": "llm_generated",
+                    "attempts": attempt,
+                    "forbidden_terms": [],
+                }
+
+            last_prompt = prompt
+            last_forbidden_terms = forbidden_terms
+            forbidden_text = ", ".join(forbidden_terms)
+            print(
+                f"Initial prompt attempt {attempt}/{max_retries} leaked forbidden "
+                f"terms for {target_class}: {forbidden_text}"
+            )
+
+        return {
+            "prompt": "",
+            "source": "llm_failed",
+            "attempts": max_retries,
+            "forbidden_terms": last_forbidden_terms,
+            "error": last_error
+            or f"Forbidden terms leaked after retries. Last prompt: {last_prompt}",
+        }
 
     def build_loss_instruction(self, target_class: str, classifier_result: dict) -> str:
         """Build a natural-language loss from classifier feedback.
@@ -284,6 +381,22 @@ class TextGradPromptOptimizer:
             raise RuntimeError(f"Missing prompt file: {display_path}")
 
         return path.read_text(encoding="utf-8").strip()
+
+    def _litellm_model_name(self) -> str:
+        """Return the LiteLLM model name for the configured TextGrad backend."""
+        return self.backward_engine.removeprefix("experimental:")
+
+    def _completion_text(self, response) -> str:
+        """Extract assistant text from a LiteLLM completion response."""
+        try:
+            return str(response["choices"][0]["message"]["content"])
+        except (KeyError, IndexError, TypeError):
+            pass
+
+        try:
+            return str(response.choices[0].message.content)
+        except (AttributeError, IndexError, TypeError) as error:
+            raise RuntimeError("Could not read text from LiteLLM response.") from error
 
     def _value_of(self, variable) -> str:
         """Read the text value from a TextGrad object across versions."""

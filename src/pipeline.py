@@ -72,6 +72,7 @@ class TextBackPipeline:
         self.image_generator = build_image_generator(config)
         self.textgrad_optimizer = TextGradPromptOptimizer(config)
         self.best_prompt_metadata = {}
+        self.initial_prompt_metadata = {}
 
     def run_optimization(self) -> dict[str, str]:
         """Optimize prompts for all configured target classes.
@@ -82,11 +83,17 @@ class TextBackPipeline:
         self._reset_optimization_logs()
         final_prompts = {}
         self.best_prompt_metadata = {}
+        self.initial_prompt_metadata = {}
+        initial_prompt_cache = self._load_initial_prompt_cache()
 
         for target_class in self.experiment["target_classes"]:
             print(f"Optimizing prompt for: {target_class}")
             try:
-                final_prompts[target_class] = self._optimize_one_class(target_class)
+                initial_prompt = self._get_initial_prompt(target_class, initial_prompt_cache)
+                final_prompts[target_class] = self._optimize_one_class(
+                    target_class,
+                    initial_prompt,
+                )
                 self._save_final_prompts(final_prompts)
             except RuntimeError:
                 self._save_final_prompts(final_prompts)
@@ -96,16 +103,16 @@ class TextBackPipeline:
         self._save_final_prompts(final_prompts)
         return final_prompts
 
-    def _optimize_one_class(self, target_class: str) -> str:
+    def _optimize_one_class(self, target_class: str, initial_prompt: str) -> str:
         """Run TextGrad prompt optimization for one class.
 
         Args:
             target_class: Exact ImageNet target label.
+            initial_prompt: Name-free image-generation prompt.
 
         Returns:
             Final optimized prompt.
         """
-        initial_prompt = self._make_initial_prompt(target_class)
         prompt_variable = self.textgrad_optimizer.make_prompt_variable(initial_prompt, target_class)
         optimizer = self.textgrad_optimizer.make_optimizer(prompt_variable)
         best_prompt = initial_prompt
@@ -156,8 +163,68 @@ class TextBackPipeline:
         }
         return best_prompt
 
-    def _make_initial_prompt(self, target_class: str) -> str:
-        """Create a name-free cue prompt for the target class.
+    def _get_initial_prompt(self, target_class: str, cache: dict[str, str]) -> str:
+        """Load, generate, or fall back to an initial prompt for one class."""
+        use_llm = bool(self.config["textgrad"].get("use_llm_initial_prompt", True))
+        if not use_llm:
+            prompt = self._make_fallback_initial_prompt(target_class)
+            self._record_initial_prompt_metadata(
+                target_class=target_class,
+                source="fallback_config",
+                prompt=prompt,
+                forbidden_terms=[],
+            )
+            return prompt
+
+        if target_class in cache:
+            prompt = cache[target_class]
+            self._record_initial_prompt_metadata(
+                target_class=target_class,
+                source="llm_cached",
+                prompt=prompt,
+                forbidden_terms=[],
+            )
+            return prompt
+
+        result = self.textgrad_optimizer.generate_initial_prompt(target_class)
+        if result["prompt"]:
+            prompt = result["prompt"]
+            cache[target_class] = prompt
+            self._save_initial_prompt_cache(cache)
+            self._record_initial_prompt_metadata(
+                target_class=target_class,
+                source=result["source"],
+                prompt=prompt,
+                forbidden_terms=result.get("forbidden_terms", []),
+                attempts=result.get("attempts"),
+                error=result.get("error", ""),
+            )
+            return prompt
+
+        fallback_enabled = bool(
+            self.config["textgrad"].get("fallback_on_initial_prompt_failure", True)
+        )
+        if not fallback_enabled:
+            raise RuntimeError(
+                f"Initial LLM prompt generation failed for {target_class}: "
+                f"{result.get('error', 'unknown error')}"
+            )
+
+        prompt = self._make_fallback_initial_prompt(target_class)
+        cache[target_class] = prompt
+        self._save_initial_prompt_cache(cache)
+        self._record_initial_prompt_metadata(
+            target_class=target_class,
+            source="fallback_after_llm_failure",
+            prompt=prompt,
+            forbidden_terms=result.get("forbidden_terms", []),
+            attempts=result.get("attempts"),
+            error=result.get("error", ""),
+        )
+        return prompt
+
+    def _make_fallback_initial_prompt(self, target_class: str) -> str:
+        """Create a deterministic fallback prompt for the target class.
 
         Args:
             target_class: Hidden classifier target, not included in the prompt.
@@ -165,8 +232,7 @@ class TextBackPipeline:
         Returns:
             Initial image-generation prompt.
         """
-        # These seed prompts follow prompts/initial_prompt_system.txt: they are
-        # name-free and use visual cue families instead of exact class labels.
+        # Fallback prompts are useful for deterministic development runs.
         prompts = {
             "tabby": (
                 "Warm indoor scene with orange-black striped soft textures, plush "
@@ -195,6 +261,41 @@ class TextBackPipeline:
             target_class,
             "Realistic photographic scene with distinctive textures, materials, colors, "
             "shapes, background context, and co-occurring visual cues.",
+        )
+
+    def _load_initial_prompt_cache(self) -> dict[str, str]:
+        """Load cached LLM initial prompts when available."""
+        path = Path(self.paths["results_dir"]) / "initial_prompts.json"
+        if not path.exists():
+            return {}
+
+        with path.open("r", encoding="utf-8") as file:
+            return json.load(file)
+
+    def _save_initial_prompt_cache(self, cache: dict[str, str]) -> None:
+        """Save cached LLM initial prompts for reproducible reruns."""
+        write_json(Path(self.paths["results_dir"]) / "initial_prompts.json", cache)
+
+    def _record_initial_prompt_metadata(
+        self,
+        target_class: str,
+        source: str,
+        prompt: str,
+        forbidden_terms: list[str],
+        attempts: int | None = None,
+        error: str = "",
+    ) -> None:
+        """Save where the initial prompt came from for one class."""
+        self.initial_prompt_metadata[target_class] = {
+            "source": source,
+            "prompt": prompt,
+            "forbidden_terms": forbidden_terms,
+            "attempts": attempts,
+            "error": error,
+        }
+        write_json(
+            Path(self.paths["results_dir"]) / "initial_prompt_metadata.json",
+            self.initial_prompt_metadata,
         )
 
     def run_inference(self) -> dict[str, float]:
@@ -338,6 +439,7 @@ class TextBackPipeline:
         for file_name in [
             "final_prompts.json",
             "best_prompt_metadata.json",
+            "initial_prompt_metadata.json",
             "optimization_logs.csv",
             "optimization_logs.jsonl",
         ]:

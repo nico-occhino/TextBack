@@ -29,6 +29,10 @@ textual_optimizer:
 textgrad:
   backward_engine: "experimental:groq/openai/gpt-oss-20b"
   cache: true
+  use_llm_initial_prompt: true
+  initial_prompt_temperature: 0.2
+  initial_prompt_max_retries: 3
+  fallback_on_initial_prompt_failure: true
   max_prompt_words: 45
   sleep_seconds_after_step: 35
   max_retries_on_rate_limit: 5
