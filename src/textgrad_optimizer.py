@@ -79,9 +79,10 @@ class TextGradPromptOptimizer:
             config["textgrad"].get("fallback_on_initial_prompt_failure", True)
         )
         self.prompts_dir = Path(config["paths"].get("prompts_dir", "prompts"))
+        # Used for LLM initial name-free prompt generation.
         self.initial_prompt_system = self._load_prompt_file("initial_prompt_system.txt")
+        # Used to build the active TextGrad textual loss instruction.
         self.refinement_prompt_system = self._load_prompt_file("refinement_prompt_system.txt")
-        self.textual_loss_system = self._load_prompt_file("textual_loss_system.txt")
         self._check_api_key()
 
         import textgrad as tg

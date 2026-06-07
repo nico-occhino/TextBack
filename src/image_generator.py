@@ -1,63 +1,6 @@
-"""Image generators for TextBack.
-
-The real experiments use Diffusers.  The dummy generator is kept only for quick
-development checks when we do not want to load a diffusion model.
-"""
+"""Image generation for TextBack using Hugging Face Diffusers."""
 
 from pathlib import Path
-import hashlib
-
-
-class DummyImageGenerator:
-    """Development-only generator that writes a simple colored shape."""
-
-    def __init__(self, width: int = 384, height: int = 384) -> None:
-        """Store image size.
-
-        Args:
-            width: Output width in pixels.
-            height: Output height in pixels.
-        """
-        self.width = width
-        self.height = height
-
-    def generate(self, prompt: str, output_path: str | Path, seed: int | None = None) -> Path:
-        """Create a simple placeholder image without prompt text.
-
-        Args:
-            prompt: Prompt used only to choose deterministic colors.
-            output_path: Path where the image should be saved.
-            seed: Optional seed, accepted for interface compatibility.
-
-        Returns:
-            Path to the saved image.
-        """
-        from PIL import Image, ImageDraw
-
-        output_path = Path(output_path)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-
-        background_color = self._color_from_prompt(prompt)
-        object_color = tuple(255 - value for value in background_color)
-        image = Image.new("RGB", (self.width, self.height), background_color)
-        draw = ImageDraw.Draw(image)
-
-        margin_x = self.width // 4
-        margin_y = self.height // 4
-        draw.ellipse(
-            (margin_x, margin_y, self.width - margin_x, self.height - margin_y),
-            fill=object_color,
-            outline="white",
-            width=4,
-        )
-
-        image.save(output_path)
-        return output_path
-
-    def _color_from_prompt(self, prompt: str) -> tuple[int, int, int]:
-        """Create a deterministic RGB color from prompt text."""
-        digest = hashlib.md5(prompt.encode("utf-8")).digest()
-        return (70 + digest[0] % 120, 70 + digest[1] % 120, 70 + digest[2] % 120)
 
 
 class LocalDiffusersGenerator:
@@ -164,17 +107,12 @@ def build_image_generator(config: dict):
         config: Loaded project configuration.
 
     Returns:
-        LocalDiffusersGenerator or development-only DummyImageGenerator.
+        LocalDiffusersGenerator.
     """
     generator_config = config["image_generator"]
     provider = generator_config.get("provider", "diffusers")
 
     if provider == "diffusers":
         return LocalDiffusersGenerator(config)
-    if provider == "dummy":
-        return DummyImageGenerator(
-            width=int(generator_config.get("width", 384)),
-            height=int(generator_config.get("height", 384)),
-        )
 
-    raise ValueError(f"Unsupported image generator provider: {provider}")
+    raise ValueError("Final TextBack workflow requires image_generator.provider='diffusers'.")

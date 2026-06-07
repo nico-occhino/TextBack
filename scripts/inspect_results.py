@@ -1,20 +1,17 @@
 """Inspect TextBack result files from the command line.
 
 This script is intentionally lightweight: it uses only the standard library
-plus the project config loader, and it prints a compact oral-exam summary.
+and it prints a compact oral-exam summary from saved result files.
 """
 
 import argparse
 import csv
 import json
 import sys
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(PROJECT_ROOT))
-
-from src.config import load_config
 
 
 def parse_args() -> argparse.Namespace:
@@ -26,9 +23,9 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     """Load available result files and print a readable summary."""
+    _configure_stdout()
     args = parse_args()
-    config = load_config(args.config)
-    results_dir = Path(config["paths"]["results_dir"])
+    results_dir = _load_results_dir(args.config)
 
     final_prompts = _read_json(results_dir / "final_prompts.json")
     initial_prompts = _read_json(results_dir / "initial_prompts.json")
@@ -36,6 +33,7 @@ def main() -> None:
     best_prompt_metadata = _read_json(results_dir / "best_prompt_metadata.json")
     activation_rates = _read_json(results_dir / "activation_rates.json")
     inference_summary = _read_json(results_dir / "inference_summary.json")
+    inference_results = _read_csv(results_dir / "inference_results.csv")
     real_subset_summary = _read_csv(results_dir / "real_subset_summary.csv")
     optimization_logs = _read_csv(results_dir / "optimization_logs.csv")
 
@@ -45,7 +43,8 @@ def main() -> None:
     _print_activation_rates(activation_rates)
     _print_inference_summary(inference_summary)
     _print_real_subset_summary(real_subset_summary)
-    _print_baseline_comparison(real_subset_summary, activation_rates)
+    _print_baseline_comparison(real_subset_summary, inference_summary)
+    _print_confusion_distribution(inference_results)
     _print_optimization_trajectory(optimization_logs)
     _print_guardrail_counts(optimization_logs)
     _print_best_prompt_metadata(best_prompt_metadata)
@@ -65,6 +64,51 @@ def _read_csv(path: Path) -> list[dict] | None:
         return None
     with path.open("r", newline="", encoding="utf-8") as file:
         return list(csv.DictReader(file))
+
+
+def _configure_stdout() -> None:
+    """Prefer UTF-8 output when the host Python exposes stream reconfiguration."""
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
+
+def _load_results_dir(config_path: str) -> Path:
+    """Read paths.results_dir from the project YAML without extra dependencies."""
+    path = Path(config_path)
+    if not path.is_absolute():
+        path = PROJECT_ROOT / path
+
+    section = None
+    with path.open("r", encoding="utf-8") as file:
+        for raw_line in file:
+            line = raw_line.split("#", 1)[0].rstrip()
+            if not line.strip():
+                continue
+            if not raw_line.startswith((" ", "\t")) and line.endswith(":"):
+                section = line[:-1].strip()
+                continue
+            if section == "paths":
+                key, separator, value = line.strip().partition(":")
+                if separator and key == "results_dir":
+                    return _resolve_project_path(_strip_yaml_scalar(value))
+
+    raise ValueError(f"Could not find paths.results_dir in {path}")
+
+
+def _strip_yaml_scalar(value: str) -> str:
+    """Strip whitespace and simple YAML string quotes."""
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1]
+    return value
+
+
+def _resolve_project_path(value: str) -> Path:
+    """Resolve project-relative config paths."""
+    path = Path(value)
+    if path.is_absolute():
+        return path
+    return PROJECT_ROOT / path
 
 
 def _print_final_prompts(final_prompts) -> None:
@@ -109,7 +153,7 @@ def _print_initial_prompt_metadata(metadata) -> None:
 
 def _print_activation_rates(activation_rates) -> None:
     """Print top-1 activation rates."""
-    print("\nB. Activation Rates")
+    print("\nB. AMR@1")
     if not activation_rates:
         print("  results/activation_rates.json not found")
         return
@@ -128,11 +172,14 @@ def _print_inference_summary(inference_summary) -> None:
     for target_class, metrics in inference_summary.items():
         top1 = _format_float(metrics.get("top1_activation_rate"))
         top5 = _format_float(metrics.get("top5_activation_rate"))
-        confidence = _format_float(metrics.get("mean_target_confidence"))
-        rank = _format_float(metrics.get("mean_target_rank"))
+        mean_confidence = _format_float(metrics.get("mean_target_confidence"))
+        median_confidence = _format_float(metrics.get("median_target_confidence"))
+        mean_rank = _format_float(metrics.get("mean_target_rank"))
         print(
-            f"  {target_class}: top1={top1}, top5={top5}, "
-            f"mean_conf={confidence}, mean_rank={rank}"
+            f"  {target_class}: AMR@1={top1}, AMR@5={top5}, "
+            f"Mean target confidence={mean_confidence}, "
+            f"Median target confidence={median_confidence}, "
+            f"Mean target rank={mean_rank}"
         )
 
 
@@ -151,25 +198,59 @@ def _print_real_subset_summary(rows: list[dict] | None) -> None:
         )
 
 
-def _print_baseline_comparison(rows: list[dict] | None, activation_rates) -> None:
+def _print_baseline_comparison(rows: list[dict] | None, inference_summary) -> None:
     """Print generated-image activation next to real-subset accuracy."""
     print("\nE. Real Baseline vs Generated Activation")
-    if not rows or not activation_rates:
-        print("  Need both real_subset_summary.csv and activation_rates.json")
+    if not rows or not inference_summary:
+        print("  Need both real_subset_summary.csv and inference_summary.json")
         return
 
-    real_top1 = {row["target_class"]: row["top1_accuracy"] for row in rows}
-    for target_class, generated_rate in activation_rates.items():
-        real_rate = real_top1.get(target_class)
+    real_metrics = {row["target_class"]: row for row in rows}
+    for target_class, generated_metrics in inference_summary.items():
+        real_row = real_metrics.get(target_class, {})
+        real_top1 = _to_float(real_row.get("top1_accuracy"))
+        real_top5 = _to_float(real_row.get("top5_accuracy"))
+        generated_top1 = _to_float(generated_metrics.get("top1_activation_rate"))
+        generated_top5 = _to_float(generated_metrics.get("top5_activation_rate"))
         print(
-            f"  {target_class}: real_top1={_format_float(real_rate)}, "
-            f"generated_top1={_format_float(generated_rate)}"
+            f"  {target_class}: real_top1={_format_float(real_top1)}, "
+            f"generated_AMR@1={_format_float(generated_top1)}, "
+            f"delta_top1={_format_float(_subtract(generated_top1, real_top1))}, "
+            f"real_top5={_format_float(real_top5)}, "
+            f"generated_AMR@5={_format_float(generated_top5)}, "
+            f"delta_top5={_format_float(_subtract(generated_top5, real_top5))}"
         )
+
+
+def _print_confusion_distribution(rows: list[dict] | None) -> None:
+    """Print the most frequent non-target top-1 predictions."""
+    print("\nF. Confusion Distribution")
+    if not rows:
+        print("  results/inference_results.csv not found")
+        return
+
+    counts_by_class = defaultdict(Counter)
+    for row in rows:
+        if _is_true(row.get("top1_correct")):
+            continue
+        target_class = row.get("target_class")
+        top1_label = row.get("top1_label")
+        if target_class and top1_label:
+            counts_by_class[target_class][top1_label] += 1
+
+    if not counts_by_class:
+        print("  No non-target top-1 predictions found")
+        return
+
+    for target_class, counts in counts_by_class.items():
+        print(f"  {target_class}:")
+        for label, count in counts.most_common(5):
+            print(f"    {label}: {count}")
 
 
 def _print_optimization_trajectory(rows: list[dict] | None) -> None:
     """Print target confidence/rank over optimization iterations."""
-    print("\nF. Optimization Trajectory")
+    print("\nG. Optimization Trajectory")
     if not rows:
         print("  results/optimization_logs.csv not found")
         return
@@ -191,7 +272,7 @@ def _print_optimization_trajectory(rows: list[dict] | None) -> None:
 
 def _print_guardrail_counts(rows: list[dict] | None) -> None:
     """Print how often TextGrad updates were rejected by lexical guardrails."""
-    print("\nG. Guardrail Rejections")
+    print("\nH. Guardrail Rejections")
     if not rows:
         print("  results/optimization_logs.csv not found")
         return
@@ -209,7 +290,7 @@ def _print_guardrail_counts(rows: list[dict] | None) -> None:
 
 def _print_best_prompt_metadata(metadata) -> None:
     """Print which optimization step produced the saved final prompt."""
-    print("\nH. Best Prompt Selection")
+    print("\nI. Best Prompt Selection")
     if not metadata:
         print("  results/best_prompt_metadata.json not found")
         return
@@ -220,6 +301,28 @@ def _print_best_prompt_metadata(metadata) -> None:
             f"  {target_class}: best_iteration={values.get('best_iteration')}, "
             f"confidence={confidence}, rank={values.get('best_target_rank')}"
         )
+
+
+def _is_true(value) -> bool:
+    """Return whether a CSV boolean-like value is true."""
+    return str(value).strip().lower() == "true"
+
+
+def _subtract(left, right):
+    """Subtract optional numeric values."""
+    if left is None or right is None:
+        return None
+    return left - right
+
+
+def _to_float(value):
+    """Convert numeric strings to floats when possible."""
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _format_float(value) -> str:

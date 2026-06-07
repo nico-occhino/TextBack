@@ -7,19 +7,17 @@ classifier.
 
 The goal is not to prove causality.  The goal is to discover candidate
 textures, materials, shapes, colors, backgrounds, and co-occurring cues that may
-act like shortcut features for a fixed classifier.
+act like candidate shortcut cues for a fixed classifier.
 
 ## Final Pipeline
 
 ```text
-TextGrad prompt variable
-  -> Stable Diffusion image generation
-  -> RobustBench Salman2020Do_R50 classifier prediction
-  -> TextGrad TextLoss from classifier feedback
-  -> loss.backward()
-  -> TextGrad TGD optimizer.step()
-  -> updated name-free cue prompt
-  -> inference activation maximization
+1. LLM generates the initial name-free prompt.
+2. Stable Diffusion generates images.
+3. RobustBench RobustResNet50 classifies images.
+4. TextGrad refines prompts using classifier feedback.
+5. Best prompt is selected by target confidence during optimization.
+6. Inference evaluates AMR@1 and AMR@5 over generated images.
 ```
 
 Stable Diffusion and RobustBench are fixed black-box forward components.  Only
@@ -50,7 +48,7 @@ deterministic fallback prompts in `src/pipeline.py` for development runs.
 The guardrail blocks exact class names and close synonyms.  It intentionally
 does not block all class-associated visual cues such as ash, racetrack, cactus,
 typography, stripes, or domestic furniture, because those cues are candidate
-shortcut cues under investigation.
+visual cues / candidate shortcut cues under investigation.
 
 If LLM initial prompt generation leaks forbidden terms, TextBack retries.  If
 all retries fail and `textgrad.fallback_on_initial_prompt_failure: true`, it
@@ -59,8 +57,9 @@ uses the deterministic fallback prompt for that class and records the source in
 prevents one bad LLM response from stopping the whole experiment.
 
 `refinement_prompt_system.txt` is loaded and used inside the TextGrad loss
-instruction.  `textual_loss_system.txt` documents a possible future separate
-critic but is not implemented.
+instruction.  `textual_loss_system.txt` is not active in the current
+implementation; it documents a possible optional future extension with an
+additional LLM critic.
 
 Stable Diffusion 1.5 has a short CLIP text context window, so prompts are capped
 by `textgrad.max_prompt_words`.
@@ -194,8 +193,20 @@ Inspect saved results:
 python scripts/inspect_results.py --config configs/default.yaml
 ```
 
-The main metric is activation maximization rate.  Inference summary metrics
-such as top-5 activation and mean target confidence are diagnostics.
+## Activation Maximization Metrics
+
+AMR@1 is the primary metric required by the project: the fraction of generated
+images classified as the target class.  It is stored for backward compatibility
+in `results/activation_rates.json` and reported by `scripts/inspect_results.py`
+as AMR@1.
+
+AMR@5, mean/median target confidence, and mean target rank are diagnostics of
+activation strength.  They help distinguish weak top-1 hits from prompts that
+consistently move the target class upward in the classifier distribution.
+
+The real-baseline comparison reports real-subset top-1/top-5 accuracy beside
+generated AMR@1/AMR@5, with deltas.  The confusion distribution shows which
+classes dominate when the target is not top-1.
 
 ## Main Files
 
