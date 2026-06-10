@@ -30,16 +30,16 @@ textgrad:
   initial_prompt_temperature: 0.2
   initial_prompt_max_retries: 3
   fallback_on_initial_prompt_failure: true
-  max_prompt_words: 45
-  sleep_seconds_after_step: 50
-  max_retries_on_rate_limit: 7
+  max_prompt_words: 55
+  sleep_seconds_after_step: 35
+  max_retries_on_rate_limit: 5
 
 descriptor_memory:
   enabled: true
   max_descriptors_per_class: 12
   max_descriptor_words: 6
   positive_rank_threshold: 5
-  min_confidence_threshold: 0.05
+  min_confidence_threshold: 0.03
 
 image_generator:
   provider: "diffusers"
@@ -48,10 +48,10 @@ image_generator:
   width: 384
   num_inference_steps: 30
   guidance_scale: 7.5
-  use_float16: false
-  force_float32: true
+  use_float16: true
+  force_float32: false
   enable_attention_slicing: true
-  enable_cpu_offload: true
+  enable_cpu_offload: false
   disable_safety_checker: true
   base_seed: 42
   vary_seed: true

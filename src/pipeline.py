@@ -11,9 +11,10 @@ import statistics
 
 from src.classifier import build_classifier
 from src.config import create_output_dirs
+from src.descriptors import update_descriptor_memory
 from src.image_generator import build_image_generator
 from src.logging_utils import append_csv_row, append_jsonl_record, write_json
-from src.textgrad_optimizer import TextGradPromptOptimizer
+from src.textgrad_optimizer import TextGradPromptOptimizer, contains_forbidden_terms
 from src.utils import ensure_dir, set_seed, slugify
 
 
@@ -33,6 +34,7 @@ OPTIMIZATION_COLUMNS = [
     "target_confidence",
     "target_rank",
     "topk",
+    "positive_descriptors",
 ]
 
 INFERENCE_COLUMNS = [
@@ -73,6 +75,7 @@ class TextBackPipeline:
         self.textgrad_optimizer = TextGradPromptOptimizer(config)
         self.best_prompt_metadata = {}
         self.initial_prompt_metadata = {}
+        self.descriptor_memory = {}
 
     def run_optimization(self) -> dict[str, str]:
         """Optimize prompts for all configured target classes.
@@ -131,6 +134,14 @@ class TextBackPipeline:
                 target_class=target_class,
                 top_k=int(self.experiment.get("top_k", 5)),
             )
+            self.descriptor_memory = update_descriptor_memory(
+                memory=self.descriptor_memory,
+                target_class=target_class,
+                prompt=prompt,
+                classifier_result=classifier_result,
+                config=self.config,
+            )
+            self._save_descriptor_memory()
 
             current_score = float(classifier_result["target_confidence"])
             if current_score > best_score:
@@ -144,6 +155,7 @@ class TextBackPipeline:
                 optimizer,
                 target_class,
                 classifier_result,
+                positive_descriptors=self.descriptor_memory.get(target_class, []),
             )
 
             self._log_optimization_step(
@@ -178,13 +190,22 @@ class TextBackPipeline:
 
         if target_class in cache:
             prompt = cache[target_class]
-            self._record_initial_prompt_metadata(
-                target_class=target_class,
-                source="llm_cached",
-                prompt=prompt,
-                forbidden_terms=[],
+            forbidden_terms = contains_forbidden_terms(prompt, target_class)
+            if not forbidden_terms:
+                self._record_initial_prompt_metadata(
+                    target_class=target_class,
+                    source="llm_cached",
+                    prompt=prompt,
+                    forbidden_terms=[],
+                )
+                return prompt
+
+            print(
+                f"Cached initial prompt for {target_class} contains forbidden terms "
+                f"{forbidden_terms}; regenerating."
             )
-            return prompt
+            cache.pop(target_class)
+            self._save_initial_prompt_cache(cache)
 
         result = self.textgrad_optimizer.generate_initial_prompt(target_class)
         if result["prompt"]:
@@ -389,6 +410,9 @@ class TextBackPipeline:
             "target_confidence": classifier_result["target_confidence"],
             "target_rank": classifier_result["target_rank"],
             "topk": classifier_result["topk"],
+            "positive_descriptors": "; ".join(
+                self.descriptor_memory.get(target_class, [])
+            ),
         }
 
         results_dir = Path(self.paths["results_dir"])
@@ -433,6 +457,13 @@ class TextBackPipeline:
         write_json(results_dir / "final_prompts.json", cleaned_prompts)
         write_json(results_dir / "best_prompt_metadata.json", self.best_prompt_metadata)
 
+    def _save_descriptor_memory(self) -> None:
+        """Save positive descriptor memory for inspection and reproducibility."""
+        write_json(
+            Path(self.paths["results_dir"]) / "descriptor_memory.json",
+            self.descriptor_memory,
+        )
+
     def _reset_optimization_logs(self) -> None:
         """Remove old optimization outputs before a new run."""
         results_dir = Path(self.paths["results_dir"])
@@ -440,6 +471,7 @@ class TextBackPipeline:
             "final_prompts.json",
             "best_prompt_metadata.json",
             "initial_prompt_metadata.json",
+            "descriptor_memory.json",
             "optimization_logs.csv",
             "optimization_logs.jsonl",
         ]:

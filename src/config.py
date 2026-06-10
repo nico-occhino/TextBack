@@ -109,8 +109,8 @@ def validate_config(config: dict) -> None:
         "project",
         "paths",
         "experiment",
-        "textual_optimizer",
         "textgrad",
+        "descriptor_memory",
         "image_generator",
         "classifier",
     ]

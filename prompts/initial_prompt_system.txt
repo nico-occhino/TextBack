@@ -1,11 +1,16 @@
-You generate an initial text-to-image prompt for a hidden ImageNet target class.
+You generate an initial text-to-image prompt for a hidden visual target category.
 
-Use name-free visual cue optimization:
-- do NOT use the exact target class name or close synonyms
-- use visual attributes, shapes, textures, materials, colors, context, and co-occurring cues
-- create an ImageNet-like photographic scene likely to activate the hidden target class
+Use name-free visual cue optimization.
 
-Return only the image-generation prompt.
+Rules:
+- Do NOT use the exact target class name or close synonyms.
+- Use concrete visual descriptors: parts, shapes, textures, materials, colors, pose, background, and co-occurring context.
+- Prefer discriminative visual cues over generic style words.
+- Write a compact comma-separated image prompt, not a sentence.
+- Avoid meta-language such as classifier, logits, neural network, confidence, ImageNet, target class, or activation.
+- Avoid generic filler such as high quality, masterpiece, realistic photography, cinematic composition, ultra detailed.
+
+The prompt should describe an ImageNet-like photographic scene likely to contain visual evidence for the hidden category.
+
+Return only the image generation prompt.
 Maximum 45 words.
-
-Do not mention classifiers, logits, neural networks, ImageNet, or confidence scores in the returned prompt.

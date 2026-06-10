@@ -33,7 +33,8 @@ def clean_prompt(prompt: str, max_prompt_words: int = 60) -> str:
         Prompt with whitespace cleaned and capped by word count.
     """
     words = prompt.strip().replace("\n", " ").split()
-    return " ".join(words[:max_prompt_words])
+    cleaned = " ".join(words[:max_prompt_words])
+    return cleaned.rstrip(" ,;")
 
 
 def contains_forbidden_terms(prompt: str, target_class: str) -> list[str]:
@@ -44,7 +45,8 @@ def contains_forbidden_terms(prompt: str, target_class: str) -> list[str]:
         target_class: Hidden ImageNet target class.
 
     Returns:
-        List of forbidden terms found in the prompt.
+        List of forbidden terms found in the prompt. 
+         this is just a lexical guardrail not a semantic guardrail
     """
     prompt_lower = prompt.lower()
     return [
@@ -63,7 +65,7 @@ class TextGradPromptOptimizer:
         Args:
             config: Loaded project configuration.
         """
-        self._load_env_file()
+        self._load_env_file()  # to load the api key
         self.backward_engine = config["textgrad"]["backward_engine"]
         self.cache = bool(config["textgrad"].get("cache", True))
         self.sleep_seconds_after_step = int(config["textgrad"].get("sleep_seconds_after_step", 20))
@@ -87,15 +89,19 @@ class TextGradPromptOptimizer:
 
         import textgrad as tg
 
-        self.tg = tg
+        self.tg = tg  # Store the TextGrad module for later use.
 
-        # TextGrad uses this engine during loss.backward(), where textual
-        # gradients are produced by the LLM.
+        # TextGrad uses this engine during loss.backward(), where the LLM
+        # produces textual gradients instead of numerical gradients.
         self._set_backward_engine()
         self.loss_instruction_variable = self.tg.Variable(
             "Initial TextBack loss instruction.",
-            requires_grad=False,
-            role_description="dynamic textual loss instruction built from classifier feedback",
+            requires_grad=False,  # Defines the textual loss/evaluation criterion; it is not optimized.
+            role_description=(
+                "non-trainable textual loss instruction that tells TextGrad how to "
+                "evaluate and critique the current image-generation prompt using "
+                "classifier feedback, target-rank information, and positive descriptors"
+            ),
         )
         self.loss_fn = self.tg.TextLoss(self.loss_instruction_variable)
 
@@ -115,8 +121,8 @@ class TextGradPromptOptimizer:
             initial_prompt,
             requires_grad=True,
             role_description=(
-                "image-generation prompt optimized to activate ImageNet class "
-                f"'{target_class}'"
+                "name-free text-to-image prompt optimized through textual feedback "
+                f"to activate the hidden visual category '{target_class}'"
             ),
         )
 
@@ -212,12 +218,18 @@ class TextGradPromptOptimizer:
             or f"Forbidden terms leaked after retries. Last prompt: {last_prompt}",
         }
 
-    def build_loss_instruction(self, target_class: str, classifier_result: dict) -> str:
+    def build_loss_instruction(
+        self,
+        target_class: str,
+        classifier_result: dict,
+        positive_descriptors: list[str] | None = None,
+    ) -> str:
         """Build a natural-language loss from classifier feedback.
 
         Args:
             target_class: Desired ImageNet class.
             classifier_result: Output dictionary from classifier.predict().
+            positive_descriptors: Descriptor memory for this target class.
 
         Returns:
             Instruction string passed to tg.TextLoss.
@@ -227,6 +239,18 @@ class TextGradPromptOptimizer:
             topk_lines.append(
                 f"- {prediction['index']}: {prediction['label']} "
                 f"({prediction['confidence']:.4f})"
+            )
+
+        descriptor_section = ""
+        if positive_descriptors:
+            visible_descriptors = positive_descriptors[:5]
+            descriptor_lines = "\n".join(
+                f"- {descriptor}" for descriptor in visible_descriptors
+            )
+            descriptor_section = (
+                "\n\nPositive descriptors to preserve:\n"
+                f"{descriptor_lines}\n"
+                "Preserve these if useful and allowed."
             )
 
         return (
@@ -239,12 +263,20 @@ class TextGradPromptOptimizer:
             f"Target rank: {classifier_result['target_rank']}\n"
             "Top-k predictions:\n"
             + "\n".join(topk_lines)
+            + descriptor_section
             + "\nConstraint reminder: The improved image-generation prompt must not "
             "contain the exact target class name or close synonyms.\n"
             f"Maximum word reminder: return at most {self.max_prompt_words} words."
         )
 
-    def step(self, prompt_variable, optimizer, target_class: str, classifier_result: dict) -> dict:
+    def step(
+        self,
+        prompt_variable,
+        optimizer,
+        target_class: str,
+        classifier_result: dict,
+        positive_descriptors: list[str] | None = None,
+    ) -> dict:
         """Run one TextGrad optimization step.
 
         Args:
@@ -252,17 +284,34 @@ class TextGradPromptOptimizer:
             optimizer: Persistent TextGrad TGD optimizer for this prompt.
             target_class: Desired ImageNet class.
             classifier_result: Output dictionary from classifier.predict().
+            positive_descriptors: Descriptor memory for this target class.
 
         Returns:
             Dictionary with accepted/candidate prompt text and rejection details.
         """
-        loss_instruction = self.build_loss_instruction(target_class, classifier_result)
+        loss_instruction = self.build_loss_instruction(
+            target_class,
+            classifier_result,
+            positive_descriptors=positive_descriptors,
+        )
         previous_prompt = clean_prompt(self._value_of(prompt_variable), self.max_prompt_words)
 
         # The TextLoss node stays persistent; only its instruction variable
         # changes as new classifier feedback arrives.
         self._set_value(self.loss_instruction_variable, loss_instruction)
-        loss = self._run_textgrad_update_with_retries(self.loss_fn, prompt_variable, optimizer)
+        try:
+            loss = self._run_textgrad_update_with_retries(self.loss_fn, prompt_variable, optimizer)
+        except (IndexError, RuntimeError) as error:
+            if not self._is_textgrad_format_error(error):
+                raise
+            self._set_value(prompt_variable, previous_prompt)
+            return {
+                "accepted_prompt": previous_prompt,
+                "candidate_prompt": previous_prompt,
+                "textual_loss": f"[REJECTED textgrad_format_error] {error}",
+                "forbidden_terms": "",
+                "was_rejected": True,
+            }
 
         candidate_prompt = clean_prompt(self._value_of(prompt_variable), self.max_prompt_words)
         textual_loss = self._value_of(loss)
@@ -332,6 +381,18 @@ class TextGradPromptOptimizer:
             "retryerror",
         ]
         return any(marker in message for marker in rate_limit_markers)
+
+    def _is_textgrad_format_error(self, error: Exception) -> bool:
+        """Return True when TextGrad cannot parse an optimizer response."""
+        if isinstance(error, IndexError):
+            return True
+        message = str(error).lower()
+        format_error_markers = [
+            "optimizer response could not be indexed",
+            "could not be indexed",
+            "new_variable_tags",
+        ]
+        return any(marker in message for marker in format_error_markers)
 
     def _set_backward_engine(self) -> None:
         """Set TextGrad's global backward engine with a small compatibility shim."""

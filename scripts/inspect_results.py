@@ -36,6 +36,7 @@ def main() -> None:
     inference_results = _read_csv(results_dir / "inference_results.csv")
     real_subset_summary = _read_csv(results_dir / "real_subset_summary.csv")
     optimization_logs = _read_csv(results_dir / "optimization_logs.csv")
+    descriptor_memory = _read_json(results_dir / "descriptor_memory.json")
 
     _print_final_prompts(final_prompts)
     _print_initial_prompts(initial_prompts)
@@ -48,6 +49,7 @@ def main() -> None:
     _print_optimization_trajectory(optimization_logs)
     _print_guardrail_counts(optimization_logs)
     _print_best_prompt_metadata(best_prompt_metadata)
+    _print_descriptor_memory(descriptor_memory)
 
 
 def _read_json(path: Path):
@@ -163,7 +165,7 @@ def _print_activation_rates(activation_rates) -> None:
 
 
 def _print_inference_summary(inference_summary) -> None:
-    """Print inference diagnostic metrics."""
+    """Print primary and secondary activation maximization metrics."""
     print("\nC. Inference Summary")
     if not inference_summary:
         print("  results/inference_summary.json not found")
@@ -172,15 +174,7 @@ def _print_inference_summary(inference_summary) -> None:
     for target_class, metrics in inference_summary.items():
         top1 = _format_float(metrics.get("top1_activation_rate"))
         top5 = _format_float(metrics.get("top5_activation_rate"))
-        mean_confidence = _format_float(metrics.get("mean_target_confidence"))
-        median_confidence = _format_float(metrics.get("median_target_confidence"))
-        mean_rank = _format_float(metrics.get("mean_target_rank"))
-        print(
-            f"  {target_class}: AMR@1={top1}, AMR@5={top5}, "
-            f"Mean target confidence={mean_confidence}, "
-            f"Median target confidence={median_confidence}, "
-            f"Mean target rank={mean_rank}"
-        )
+        print(f"  {target_class}: AMR@1={top1}, AMR@5={top5}")
 
 
 def _print_real_subset_summary(rows: list[dict] | None) -> None:
@@ -215,10 +209,8 @@ def _print_baseline_comparison(rows: list[dict] | None, inference_summary) -> No
         print(
             f"  {target_class}: real_top1={_format_float(real_top1)}, "
             f"generated_AMR@1={_format_float(generated_top1)}, "
-            f"delta_top1={_format_float(_subtract(generated_top1, real_top1))}, "
             f"real_top5={_format_float(real_top5)}, "
-            f"generated_AMR@5={_format_float(generated_top5)}, "
-            f"delta_top5={_format_float(_subtract(generated_top5, real_top5))}"
+            f"generated_AMR@5={_format_float(generated_top5)}"
         )
 
 
@@ -303,16 +295,25 @@ def _print_best_prompt_metadata(metadata) -> None:
         )
 
 
+def _print_descriptor_memory(descriptor_memory) -> None:
+    """Print positive descriptor memory when present."""
+    print("\nJ. Positive Descriptor Memory")
+    if not descriptor_memory:
+        print("  results/descriptor_memory.json not found")
+        return
+
+    for target_class, descriptors in descriptor_memory.items():
+        print(f"  {target_class}:")
+        if not descriptors:
+            print("    (none)")
+            continue
+        for descriptor in descriptors:
+            print(f"    - {descriptor}")
+
+
 def _is_true(value) -> bool:
     """Return whether a CSV boolean-like value is true."""
     return str(value).strip().lower() == "true"
-
-
-def _subtract(left, right):
-    """Subtract optional numeric values."""
-    if left is None or right is None:
-        return None
-    return left - right
 
 
 def _to_float(value):

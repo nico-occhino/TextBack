@@ -69,6 +69,17 @@ optimization, TextBack therefore keeps the prompt with the highest observed
 target confidence and uses that best-so-far prompt for final inference.  This is
 analogous to saving the best checkpoint during model training.
 
+## Positive Descriptor Memory
+
+TextGrad updates are not monotonic, and later refinements can lose useful visual
+cues that previously increased target activation.  TextBack keeps a lightweight,
+deterministic memory of short descriptors from high-activation iterations and
+passes those descriptors into later TextGrad loss instructions.
+
+This is not an extra LLM agent or an additional critic.  It is simple memory of
+successful cue phrases from the optimization prompts, stored in
+`results/descriptor_memory.json` and summarized by `scripts/inspect_results.py`.
+
 ## Configs
 
 `configs/default.yaml` is for development:
@@ -81,7 +92,7 @@ n_inference_images: 20
 `configs/final.yaml` is the final/spec-compliant run:
 
 ```text
-n_optimization_steps: 5
+n_optimization_steps: 10
 n_inference_images: 100
 max_prompt_words: 45
 ```
@@ -94,6 +105,11 @@ LLM initial prompts: enabled and cached
 Image generator: runwayml/stable-diffusion-v1-5
 Classifier: RobustBench Salman2020Do_R50
 ```
+
+TextGrad can sometimes return a malformed optimizer response when the textual
+context is too long or the LLM does not follow the expected format.  TextBack
+treats this as a rejected update and keeps the previous prompt, similar to
+forbidden-term rejection.
 
 ## RobustBench Classifier
 
@@ -193,20 +209,34 @@ Inspect saved results:
 python scripts/inspect_results.py --config configs/default.yaml
 ```
 
+Post-hoc Grad-CAM analysis:
+
+```bash
+python scripts/run_gradcam.py --config configs/final.yaml --max-generated-per-class 5 --max-real-per-class 5
+```
+
+Generated images are selected from `results/inference_results.csv`, preferring
+rows where `target_rank == 1`.  Real images are selected from the ImageNet
+subset only when RobustResNet50 classifies them correctly.  Grad-CAM compares
+where the classifier focuses on generated versus real images; it supports
+interpretation but does not prove causal shortcut reliance.
+
 ## Activation Maximization Metrics
 
-AMR@1 is the primary metric required by the project: the fraction of generated
-images classified as the target class.  It is stored for backward compatibility
-in `results/activation_rates.json` and reported by `scripts/inspect_results.py`
-as AMR@1.
+AMR@1 is the primary activation maximization metric: the fraction of generated
+images where `target_rank == 1`.  It is stored for backward compatibility in
+`results/activation_rates.json` and reported by `scripts/inspect_results.py` as
+AMR@1.
 
-AMR@5, mean/median target confidence, and mean target rank are diagnostics of
-activation strength.  They help distinguish weak top-1 hits from prompts that
-consistently move the target class upward in the classifier distribution.
+AMR@5 is the secondary activation metric: the fraction of generated images where
+`target_rank <= 5`.
 
-The real-baseline comparison reports real-subset top-1/top-5 accuracy beside
-generated AMR@1/AMR@5, with deltas.  The confusion distribution shows which
-classes dominate when the target is not top-1.
+The final result story uses direct real-subset baseline comparison,
+confusion distribution, optimization trajectory, guardrail rejection count, best
+prompt metadata, and initial prompt source metadata as supporting diagnostics.
+Mean target confidence, median target confidence, and mean target rank are still
+saved in `results/inference_summary.json` as internal diagnostics, but they are
+not central to the final presentation.
 
 ## Main Files
 
@@ -214,12 +244,14 @@ classes dominate when the target is not top-1.
 configs/default.yaml             lightweight development settings
 configs/final.yaml               final/spec-compliant settings
 src/classifier.py                RobustBench Salman2020Do_R50 classifier
+src/descriptors.py               positive descriptor memory helpers
 src/image_generator.py           Diffusers image generator
 src/textgrad_optimizer.py        TextGrad name-free cue optimization
 src/pipeline.py                  optimization and inference orchestration
 scripts/check_environment.py     dependency and key checker
 scripts/list_imagenet_classes.py ImageNet label lookup
 scripts/evaluate_real_subset.py  real ImageNet subset baseline evaluation
+scripts/run_gradcam.py           post-hoc Captum Grad-CAM analysis
 scripts/run_optimization.py      TextBack optimization entry point
 scripts/run_inference.py         TextBack inference entry point
 scripts/inspect_results.py       compact result summary

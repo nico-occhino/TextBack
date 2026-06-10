@@ -23,9 +23,6 @@ experiment:
   n_inference_images: 20
   top_k: 5
 
-textual_optimizer:
-  backend: "textgrad"
-
 textgrad:
   backward_engine: "experimental:groq/openai/gpt-oss-20b"
   cache: true
@@ -36,6 +33,13 @@ textgrad:
   max_prompt_words: 45
   sleep_seconds_after_step: 35
   max_retries_on_rate_limit: 5
+
+descriptor_memory:
+  enabled: true
+  max_descriptors_per_class: 12
+  max_descriptor_words: 6
+  positive_rank_threshold: 5
+  min_confidence_threshold: 0.03
 
 image_generator:
   provider: "diffusers"
