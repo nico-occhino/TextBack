@@ -9,6 +9,7 @@ __pycache__/
 *.pyc
 .venv/
 
+results/gradcam/
 results/generated_images/
 results/*.csv
 results/*.json
