@@ -30,12 +30,12 @@ def main() -> None:
         print("CUDA available: unknown")
         print("Selected GPU: unknown")
 
-    has_gemini_key = bool(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"))
-    has_groq_key = bool(os.getenv("GROQ_API_KEY"))
+    has_openai_key = bool(os.getenv("OPENAI_API_KEY"))
+    has_hf_token = bool(os.getenv("HF_TOKEN"))
     print(f"python-dotenv import: {dotenv_status}")
-    print("Recommended TextGrad backend: Groq")
-    print(f"Groq API key present: {has_groq_key}")
-    print(f"Gemini API key present: {has_gemini_key}")
+    print("Recommended TextGrad backend: OpenAI")
+    print(f"OpenAI API key present: {has_openai_key}")
+    print(f"HF token present: {has_hf_token}")
 
     try:
         import robustbench  # noqa: F401

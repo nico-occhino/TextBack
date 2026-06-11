@@ -100,7 +100,7 @@ max_prompt_words: 45
 Both configs use:
 
 ```text
-TextGrad backend: experimental:groq/openai/gpt-oss-20b
+TextGrad backend: experimental:openai/gpt-5.4-mini
 LLM initial prompts: enabled and cached
 Image generator: runwayml/stable-diffusion-v1-5
 Classifier: RobustBench Salman2020Do_R50
@@ -127,16 +127,37 @@ pip install git+https://github.com/RobustBench/robustbench.git
 The first model load downloads the checkpoint under `models/imagenet/Linf/`.
 The `models/` folder is ignored by Git.
 
-## API Key
+## API Keys
 
-Create `.env` manually from `.env.example`:
+Required environment variables:
 
 ```text
-GROQ_API_KEY=your_real_key_here
+HF_TOKEN        optional but recommended for Hugging Face downloads/rate limits
+OPENAI_API_KEY required for the TextGrad/OpenAI backend
+```
+
+In PowerShell:
+
+```powershell
+$env:OPENAI_API_KEY="sk-..."
+$env:HF_TOKEN="hf_..."
+```
+
+Alternatively, create `.env` manually from `.env.example`:
+
+```text
+HF_TOKEN=...
+OPENAI_API_KEY=...
 ```
 
 Never commit real API keys.  ChatGPT Plus does not include API usage; API keys
 and billing are separate.
+
+Small LiteLLM/OpenAI smoke test:
+
+```powershell
+python -c "from dotenv import load_dotenv; load_dotenv(); from litellm import completion; r=completion(model='openai/gpt-5.4-mini', messages=[{'role':'user','content':'Reply only: ok'}], max_tokens=5); print(repr(r.choices[0].message.content))"
+```
 
 ## Environment Check
 
@@ -144,7 +165,7 @@ and billing are separate.
 python scripts/check_environment.py
 ```
 
-This checks Python, torch/CUDA, Groq key presence, RobustBench imports,
+This checks Python, torch/CUDA, API key presence, RobustBench imports,
 TextGrad, and Diffusers.  It does not load the full RobustBench checkpoint.
 
 ## ImageNet Subset Baseline

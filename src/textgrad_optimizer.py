@@ -406,6 +406,11 @@ class TextGradPromptOptimizer:
         """Check the API key expected by the selected TextGrad backend."""
         backend = self.backward_engine.lower()
 
+        if "openai" in backend and not os.getenv("OPENAI_API_KEY"):
+            raise RuntimeError(
+                "OPENAI_API_KEY is required for the configured OpenAI TextGrad backend."
+            )
+
         if "gemini" in backend and not (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")):
             raise RuntimeError(
                 f"Missing API key for selected TextGrad backend: {self.backward_engine}. "
