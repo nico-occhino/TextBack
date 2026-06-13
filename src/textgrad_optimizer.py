@@ -17,7 +17,7 @@ FORBIDDEN_TERMS = {
     "tabby": ["tabby", "cat", "kitten", "feline"],
     "sports car": ["sports car", "sport car", "car", "vehicle", "automobile"],
     "cowboy hat": ["cowboy hat"],
-    "volcano": ["volcano"],
+    "volcano": ["volcano"], 
     "book jacket": ["book jacket", "book"],
 }
 
@@ -29,7 +29,7 @@ def clean_prompt(prompt: str, max_prompt_words: int = 60) -> str:
         prompt: Raw prompt text returned by TextGrad or another LLM.
         max_prompt_words: Maximum number of words kept for Stable Diffusion.
 
-    Returns:
+    Returns: 
         Prompt with whitespace cleaned and capped by word count.
     """
     words = prompt.strip().replace("\n", " ").split()
@@ -181,6 +181,7 @@ class TextGradPromptOptimizer:
                 )
                 prompt = clean_prompt(self._completion_text(response), self.max_prompt_words)
             except Exception as error:
+                self._print_textgrad_failure(error)
                 last_error = str(error)
                 if attempt == max_retries and not self.fallback_on_initial_prompt_failure:
                     raise RuntimeError(
@@ -354,6 +355,7 @@ class TextGradPromptOptimizer:
                 time.sleep(self.sleep_seconds_after_step)
                 return loss
             except Exception as error:
+                self._print_textgrad_failure(error)
                 if self._is_rate_limit_error(error) and attempt < max_attempts:
                     print(
                         "Rate limit reached during TextGrad step. "
@@ -371,16 +373,25 @@ class TextGradPromptOptimizer:
 
     def _is_rate_limit_error(self, error: Exception) -> bool:
         """Return True when an exception looks like a provider rate limit."""
+        error_type = type(error).__name__.lower()
         message = str(error).lower()
         rate_limit_markers = [
+            "ratelimit",
             "429",
             "rate limit",
             "too many requests",
-            "tpm",
-            "tokens per minute",
-            "retryerror",
+            "quota",
         ]
-        return any(marker in message for marker in rate_limit_markers)
+        return any(
+            marker in error_type or marker in message
+            for marker in rate_limit_markers
+        )
+
+    def _print_textgrad_failure(self, error: Exception) -> None:
+        """Print concise TextGrad/LiteLLM failure details without secrets."""
+        message = str(error).replace("\n", " ")[:500]
+        print(f"TextGrad/LiteLLM failure type: {type(error).__name__}")
+        print(f"TextGrad/LiteLLM failure message: {message}")
 
     def _is_textgrad_format_error(self, error: Exception) -> bool:
         """Return True when TextGrad cannot parse an optimizer response."""
@@ -404,30 +415,62 @@ class TextGradPromptOptimizer:
 
     def _check_api_key(self) -> None:
         """Check the API key expected by the selected TextGrad backend."""
-        backend = self.backward_engine.lower()
+        normalized_backend = self._normalize_backend_name(self.backward_engine)
+        provider = self._backend_provider(normalized_backend)
 
-        if "openai" in backend and not os.getenv("OPENAI_API_KEY"):
-            raise RuntimeError(
-                "OPENAI_API_KEY is required for the configured OpenAI TextGrad backend."
-            )
+        print(f"TextGrad backend: {self.backward_engine}")
+        print(f"Detected provider: {provider or 'unknown'}")
 
-        if "gemini" in backend and not (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")):
-            raise RuntimeError(
-                f"Missing API key for selected TextGrad backend: {self.backward_engine}. "
-                "Add it to .env."
-            )
+        if provider == "openai":
+            has_key = bool(os.getenv("OPENAI_API_KEY"))
+            print(f"OPENAI_API_KEY found: {has_key}")
+            if not has_key:
+                raise RuntimeError(
+                    "OPENAI_API_KEY is required for OpenAI TextGrad backend."
+                )
+            return
 
-        if "groq" in backend and not os.getenv("GROQ_API_KEY"):
-            raise RuntimeError(
-                f"Missing API key for selected TextGrad backend: {self.backward_engine}. "
-                "Add it to .env."
-            )
+        if provider == "groq":
+            has_key = bool(os.getenv("GROQ_API_KEY"))
+            print(f"GROQ_API_KEY found: {has_key}")
+            if not has_key:
+                raise RuntimeError(
+                    f"Missing API key for selected TextGrad backend: {self.backward_engine}. "
+                    "Add it to .env."
+                )
+            return
 
-        if "gemini" not in backend and "groq" not in backend:
-            print(
-                f"Warning: no provider-specific API key check for TextGrad backend: "
-                f"{self.backward_engine}"
-            )
+        if provider == "gemini":
+            has_key = bool(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"))
+            print(f"GEMINI_API_KEY or GOOGLE_API_KEY found: {has_key}")
+            if not has_key:
+                raise RuntimeError(
+                    f"Missing API key for selected TextGrad backend: {self.backward_engine}. "
+                    "Add it to .env."
+                )
+            return
+
+        print(
+            f"Warning: no provider-specific API key check for TextGrad backend: "
+            f"{self.backward_engine}"
+        )
+
+    def _normalize_backend_name(self, backend: str) -> str:
+        """Normalize TextGrad backend names for provider checks."""
+        backend = backend.strip().lower()
+        if backend.startswith("experimental:"):
+            backend = backend.replace("experimental:", "", 1)
+        return backend
+
+    def _backend_provider(self, normalized_backend: str) -> str | None:
+        """Return the provider encoded by a normalized backend string."""
+        if "openai/" in normalized_backend or normalized_backend.startswith("openai"):
+            return "openai"
+        if "groq/" in normalized_backend or normalized_backend.startswith("groq"):
+            return "groq"
+        if "gemini/" in normalized_backend or "google/" in normalized_backend:
+            return "gemini"
+        return None
 
     def _load_env_file(self) -> None:
         """Load .env with python-dotenv when the package is installed."""
