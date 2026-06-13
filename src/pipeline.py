@@ -7,6 +7,8 @@ TextGrad textual loss/backward/TGD step.
 
 import json
 from pathlib import Path
+import random
+import re
 import statistics
 
 from src.classifier import build_classifier
@@ -15,7 +17,6 @@ from src.descriptors import update_descriptor_memory
 from src.image_generator import build_image_generator
 from src.logging_utils import append_csv_row, append_jsonl_record, write_json
 from src.textgrad_optimizer import TextGradPromptOptimizer, contains_forbidden_terms
-from src.utils import ensure_dir, set_seed, slugify
 
 
 OPTIMIZATION_COLUMNS = [
@@ -52,15 +53,37 @@ INFERENCE_COLUMNS = [
 ]
 
 
+def set_seed(seed: int) -> None:
+    random.seed(seed)
+    try:
+        import numpy as np
+
+        np.random.seed(seed)
+    except ImportError:
+        pass
+
+    try:
+        import torch
+
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+    except ImportError:
+        pass
+
+
+def slugify(text: str) -> str:
+    slug = re.sub(r"[^a-zA-Z0-9]+", "_", text.lower()).strip("_")
+    return slug or "unknown_class"
+
+
 class TextBackPipeline:
     """Run TextGrad optimization and inference evaluation."""
 
     def __init__(self, config: dict) -> None:
-        """Initialize TextGrad, generator, and classifier.
-
-        Args:
-            config: Loaded configuration dictionary.
-        """
+        """Initialize TextGrad, generator, and classifier."""
         self.config = config
         self.paths = config["paths"]
         self.experiment = config["experiment"]
@@ -68,8 +91,6 @@ class TextBackPipeline:
         create_output_dirs(config)
         set_seed(int(config["project"].get("seed", 42)))
 
-        # Load RobustBench before TextGrad/LiteLLM to avoid a gdown/importlib
-        # metadata issue observed on Windows.
         self.classifier = build_classifier(config)
         self.image_generator = build_image_generator(config)
         self.textgrad_optimizer = TextGradPromptOptimizer(config)
@@ -78,11 +99,7 @@ class TextBackPipeline:
         self.descriptor_memory = {}
 
     def run_optimization(self) -> dict[str, str]:
-        """Optimize prompts for all configured target classes.
-
-        Returns:
-            Mapping from target class to final prompt.
-        """
+        """Optimize prompts for all configured target classes."""
         self._reset_optimization_logs()
         final_prompts = {}
         self.best_prompt_metadata = {}
@@ -107,15 +124,7 @@ class TextBackPipeline:
         return final_prompts
 
     def _optimize_one_class(self, target_class: str, initial_prompt: str) -> str:
-        """Run TextGrad prompt optimization for one class.
-
-        Args:
-            target_class: Exact ImageNet target label.
-            initial_prompt: Name-free image-generation prompt.
-
-        Returns:
-            Final optimized prompt.
-        """
+        """Run TextGrad prompt optimization for one class."""
         prompt_variable = self.textgrad_optimizer.make_prompt_variable(initial_prompt, target_class)
         optimizer = self.textgrad_optimizer.make_optimizer(prompt_variable)
         best_prompt = initial_prompt
@@ -245,15 +254,7 @@ class TextBackPipeline:
         return prompt
 
     def _make_fallback_initial_prompt(self, target_class: str) -> str:
-        """Create a deterministic fallback prompt for the target class.
-
-        Args:
-            target_class: Hidden classifier target, not included in the prompt.
-
-        Returns:
-            Initial image-generation prompt.
-        """
-        # Fallback prompts are useful for deterministic development runs.
+        """Create a deterministic fallback prompt for one target class."""
         prompts = {
             "tabby": (
                 "Warm indoor scene with orange-black striped soft textures, plush "
@@ -320,11 +321,7 @@ class TextBackPipeline:
         )
 
     def run_inference(self) -> dict[str, float]:
-        """Generate images from final prompts and evaluate activation rate.
-
-        Returns:
-            Mapping from target class to activation maximization rate.
-        """
+        """Generate images from final prompts and evaluate activation rate."""
         self._reset_inference_logs()
         final_prompts = self._load_final_prompts()
         activation_rates = {}
@@ -374,13 +371,13 @@ class TextBackPipeline:
     def _optimization_image_path(self, target_class: str, iteration: int) -> Path:
         """Build the optimization image path for one iteration."""
         image_dir = Path(self.paths["generated_images_dir"]) / slugify(target_class) / "optimization"
-        ensure_dir(image_dir)
+        image_dir.mkdir(parents=True, exist_ok=True)
         return image_dir / f"step_{iteration:03d}.png"
 
     def _inference_image_path(self, target_class: str, image_index: int) -> Path:
         """Build the inference image path for one generated sample."""
         image_dir = Path(self.paths["generated_images_dir"]) / slugify(target_class) / "inference"
-        ensure_dir(image_dir)
+        image_dir.mkdir(parents=True, exist_ok=True)
         return image_dir / f"sample_{image_index:03d}.png"
 
     def _log_optimization_step(

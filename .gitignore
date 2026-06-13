@@ -6,23 +6,18 @@ Thumbs.db
 .DS_Store
 
 __pycache__/
+**/__pycache__/
 *.pyc
 .venv/
 
-results/gradcam/
-results/generated_images/
-results/*.csv
-results/*.json
-results/*.jsonl
+results/
 
 data/imagenet/
 data/imagenet_subset/
 
-# Block model checkpoints
 models/
 *.pt
 *.pth
 
-# Block tracking run-logs
 logs/
 *.jsonl

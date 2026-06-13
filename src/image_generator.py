@@ -7,11 +7,7 @@ class LocalDiffusersGenerator:
     """Local Stable Diffusion generator based on Hugging Face Diffusers."""
 
     def __init__(self, config: dict) -> None:
-        """Load a Diffusers text-to-image pipeline.
-
-        Args:
-            config: Loaded project configuration.
-        """
+        """Load a Diffusers text-to-image pipeline."""
         import torch
         from diffusers import DiffusionPipeline
 
@@ -26,8 +22,6 @@ class LocalDiffusersGenerator:
 
         load_kwargs = {"torch_dtype": dtype}
         if disable_safety_checker:
-            # Only for controlled academic experiments. Do not disable safety
-            # checks in public image generation systems.
             load_kwargs["safety_checker"] = None
 
         try:
@@ -49,16 +43,7 @@ class LocalDiffusersGenerator:
             self.pipe.to(self.device)
 
     def generate(self, prompt: str, output_path: str | Path, seed: int | None = None) -> Path:
-        """Generate one image from a prompt and save it.
-
-        Args:
-            prompt: Text-to-image prompt.
-            output_path: Path where the generated image should be saved.
-            seed: Optional deterministic seed for Diffusers generation.
-
-        Returns:
-            Path to the saved image.
-        """
+        """Generate one image from a prompt and save it."""
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         generator = None
@@ -101,14 +86,7 @@ class LocalDiffusersGenerator:
 
 
 def build_image_generator(config: dict):
-    """Create the configured image generator.
-
-    Args:
-        config: Loaded project configuration.
-
-    Returns:
-        LocalDiffusersGenerator.
-    """
+    """Create the configured image generator."""
     generator_config = config["image_generator"]
     provider = generator_config.get("provider", "diffusers")
 

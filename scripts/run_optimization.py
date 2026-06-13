@@ -4,8 +4,6 @@ import argparse
 import sys
 from pathlib import Path
 
-# Make imports work when launching from the project root:
-# python scripts/run_optimization.py --config configs/default.yaml
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -14,11 +12,7 @@ from src.pipeline import TextBackPipeline
 
 
 def parse_args() -> argparse.Namespace:
-    """Parse command line arguments.
-
-    Returns:
-        Parsed arguments.
-    """
+    """Parse command line arguments."""
     parser = argparse.ArgumentParser(description="Run TextBack optimization.")
     parser.add_argument("--config", default="configs/default.yaml", help="Path to the YAML config file.")
     return parser.parse_args()

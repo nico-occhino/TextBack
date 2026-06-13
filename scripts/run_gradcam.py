@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import csv
 from pathlib import Path
+import re
+import sys
 
 try:
     import matplotlib
@@ -22,15 +24,11 @@ else:
     GRADCAM_IMPORT_ERROR = None
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-
-import sys
-
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.classifier import build_classifier
 from src.config import load_config
 from src.logging_utils import append_csv_row
-from src.utils import slugify
 
 
 METADATA_COLUMNS = [
@@ -54,6 +52,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-real-per-class", type=int, default=5)
     parser.add_argument("--output-dir", default="results/gradcam")
     return parser.parse_args()
+
+
+def slugify(text: str) -> str:
+    slug = re.sub(r"[^a-zA-Z0-9]+", "_", text.lower()).strip("_")
+    return slug or "unknown_class"
 
 
 def main() -> None:

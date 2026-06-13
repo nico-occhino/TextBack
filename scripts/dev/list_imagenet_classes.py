@@ -6,11 +6,7 @@ from torchvision.models import ResNet50_Weights
 
 
 def parse_args() -> argparse.Namespace:
-    """Parse command line arguments.
-
-    Returns:
-        Parsed arguments with an optional query string.
-    """
+    """Parse command line arguments."""
     parser = argparse.ArgumentParser(description="List ImageNet class labels used by ResNet50.")
     parser.add_argument("--query", default=None, help="Optional case-insensitive label filter.")
     return parser.parse_args()
@@ -20,8 +16,6 @@ def main() -> None:
     """Print ImageNet labels, optionally filtered by a query."""
     args = parse_args()
 
-    # Torchvision stores the exact label names inside the pretrained weights.
-    # This helps choose target_class values that match the classifier exactly.
     weights = ResNet50_Weights.DEFAULT
     categories = weights.meta["categories"]
 

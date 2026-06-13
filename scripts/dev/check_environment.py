@@ -38,22 +38,22 @@ def main() -> None:
     print(f"HF token present: {has_hf_token}")
 
     try:
-        import robustbench  # noqa: F401
-        from robustbench.utils import load_model  # noqa: F401
+        import robustbench
+        from robustbench.utils import load_model
 
         print("robustbench import: ok")
     except Exception as error:
         print(f"robustbench import: failed - final classifier will not run ({error})")
 
     try:
-        import textgrad  # noqa: F401
+        import textgrad
 
         print("textgrad import: ok")
     except ImportError:
         print("textgrad import: failed")
 
     try:
-        import diffusers  # noqa: F401
+        import diffusers
 
         print("diffusers import: ok")
     except ImportError:

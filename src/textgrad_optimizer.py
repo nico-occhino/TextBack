@@ -9,45 +9,24 @@ from pathlib import Path
 import time
 
 
-# Guardrail scope: block exact target names and close synonyms only. Do not
-# block all class-associated visual/contextual cues such as lava, ash,
-# racetrack, cactus, typography, or sofa, because those are candidate shortcut
-# cues under investigation.
 FORBIDDEN_TERMS = {
     "tabby": ["tabby", "cat", "kitten", "feline"],
     "sports car": ["sports car", "sport car", "car", "vehicle", "automobile"],
     "cowboy hat": ["cowboy hat"],
-    "volcano": ["volcano"], 
+    "volcano": ["volcano"],
     "book jacket": ["book jacket", "book"],
 }
 
 
 def clean_prompt(prompt: str, max_prompt_words: int = 60) -> str:
-    """Normalize and cap an image-generation prompt.
-
-    Args:
-        prompt: Raw prompt text returned by TextGrad or another LLM.
-        max_prompt_words: Maximum number of words kept for Stable Diffusion.
-
-    Returns: 
-        Prompt with whitespace cleaned and capped by word count.
-    """
+    """Normalize and cap an image-generation prompt."""
     words = prompt.strip().replace("\n", " ").split()
     cleaned = " ".join(words[:max_prompt_words])
     return cleaned.rstrip(" ,;")
 
 
 def contains_forbidden_terms(prompt: str, target_class: str) -> list[str]:
-    """Find target-leaking terms in a candidate name-free cue prompt.
-
-    Args:
-        prompt: Candidate image-generation prompt.
-        target_class: Hidden ImageNet target class.
-
-    Returns:
-        List of forbidden terms found in the prompt. 
-         this is just a lexical guardrail not a semantic guardrail
-    """
+    """Find target-leaking terms in a candidate prompt."""
     prompt_lower = prompt.lower()
     return [
         term
@@ -60,12 +39,8 @@ class TextGradPromptOptimizer:
     """Optimize image prompts with TextGrad textual gradients."""
 
     def __init__(self, config: dict) -> None:
-        """Configure TextGrad and store optimizer settings.
-
-        Args:
-            config: Loaded project configuration.
-        """
-        self._load_env_file()  # to load the api key
+        """Configure TextGrad and store optimizer settings."""
+        self._load_env_file()
         self.backward_engine = config["textgrad"]["backward_engine"]
         self.cache = bool(config["textgrad"].get("cache", True))
         self.sleep_seconds_after_step = int(config["textgrad"].get("sleep_seconds_after_step", 20))
@@ -81,22 +56,18 @@ class TextGradPromptOptimizer:
             config["textgrad"].get("fallback_on_initial_prompt_failure", True)
         )
         self.prompts_dir = Path(config["paths"].get("prompts_dir", "prompts"))
-        # Used for LLM initial name-free prompt generation.
         self.initial_prompt_system = self._load_prompt_file("initial_prompt_system.txt")
-        # Used to build the active TextGrad textual loss instruction.
         self.refinement_prompt_system = self._load_prompt_file("refinement_prompt_system.txt")
         self._check_api_key()
 
         import textgrad as tg
 
-        self.tg = tg  # Store the TextGrad module for later use.
+        self.tg = tg
 
-        # TextGrad uses this engine during loss.backward(), where the LLM
-        # produces textual gradients instead of numerical gradients.
         self._set_backward_engine()
         self.loss_instruction_variable = self.tg.Variable(
             "Initial TextBack loss instruction.",
-            requires_grad=False,  # Defines the textual loss/evaluation criterion; it is not optimized.
+            requires_grad=False,
             role_description=(
                 "non-trainable textual loss instruction that tells TextGrad how to "
                 "evaluate and critique the current image-generation prompt using "
@@ -106,17 +77,7 @@ class TextGradPromptOptimizer:
         self.loss_fn = self.tg.TextLoss(self.loss_instruction_variable)
 
     def make_prompt_variable(self, initial_prompt: str, target_class: str):
-        """Create the optimizable TextGrad prompt variable.
-
-        Args:
-            initial_prompt: Starting text-to-image prompt.
-            target_class: ImageNet class we want to activate.
-
-        Returns:
-            A TextGrad Variable whose text value can be optimized.
-        """
-        # tg.Variable is the optimizable prompt, similar to a torch tensor with
-        # requires_grad=True, but for natural language.
+        """Create the trainable TextGrad prompt variable."""
         return self.tg.Variable(
             initial_prompt,
             requires_grad=True,
@@ -135,18 +96,7 @@ class TextGradPromptOptimizer:
         return clean_prompt(prompt, self.max_prompt_words)
 
     def generate_initial_prompt(self, target_class: str) -> dict:
-        """Generate one name-free initial prompt with the configured LLM.
-
-        Args:
-            target_class: Hidden ImageNet class used only for LLM guidance.
-
-        Returns:
-            Metadata dictionary containing the prompt or failure details.
-
-        Raises:
-            RuntimeError: If litellm is missing or the provider fails and
-                fallback_on_initial_prompt_failure is false.
-        """
+        """Generate one name-free initial prompt with the configured LLM."""
         try:
             from litellm import completion
         except ImportError as error:
@@ -225,16 +175,7 @@ class TextGradPromptOptimizer:
         classifier_result: dict,
         positive_descriptors: list[str] | None = None,
     ) -> str:
-        """Build a natural-language loss from classifier feedback.
-
-        Args:
-            target_class: Desired ImageNet class.
-            classifier_result: Output dictionary from classifier.predict().
-            positive_descriptors: Descriptor memory for this target class.
-
-        Returns:
-            Instruction string passed to tg.TextLoss.
-        """
+        """Build a natural-language loss from classifier feedback."""
         topk_lines = []
         for prediction in classifier_result["topk"]:
             topk_lines.append(
@@ -278,18 +219,7 @@ class TextGradPromptOptimizer:
         classifier_result: dict,
         positive_descriptors: list[str] | None = None,
     ) -> dict:
-        """Run one TextGrad optimization step.
-
-        Args:
-            prompt_variable: TextGrad Variable containing the current prompt.
-            optimizer: Persistent TextGrad TGD optimizer for this prompt.
-            target_class: Desired ImageNet class.
-            classifier_result: Output dictionary from classifier.predict().
-            positive_descriptors: Descriptor memory for this target class.
-
-        Returns:
-            Dictionary with accepted/candidate prompt text and rejection details.
-        """
+        """Run one TextGrad optimization step."""
         loss_instruction = self.build_loss_instruction(
             target_class,
             classifier_result,
@@ -297,8 +227,6 @@ class TextGradPromptOptimizer:
         )
         previous_prompt = clean_prompt(self._value_of(prompt_variable), self.max_prompt_words)
 
-        # The TextLoss node stays persistent; only its instruction variable
-        # changes as new classifier feedback arrives.
         self._set_value(self.loss_instruction_variable, loss_instruction)
         try:
             loss = self._run_textgrad_update_with_retries(self.loss_fn, prompt_variable, optimizer)
@@ -346,10 +274,8 @@ class TextGradPromptOptimizer:
                 optimizer.zero_grad()
                 loss = loss_fn(prompt_variable)
 
-                # loss.backward() asks the backward engine for textual gradients.
                 loss.backward()
 
-                # optimizer.step() applies those textual gradients to the prompt.
                 optimizer.step()
 
                 time.sleep(self.sleep_seconds_after_step)
@@ -410,7 +336,6 @@ class TextGradPromptOptimizer:
         try:
             self.tg.set_backward_engine(self.backward_engine, override=True, cache=self.cache)
         except TypeError:
-            # Older TextGrad versions may not expose the cache argument here.
             self.tg.set_backward_engine(self.backward_engine, override=True)
 
     def _check_api_key(self) -> None:
@@ -421,55 +346,31 @@ class TextGradPromptOptimizer:
         print(f"TextGrad backend: {self.backward_engine}")
         print(f"Detected provider: {provider or 'unknown'}")
 
-        if provider == "openai":
-            has_key = bool(os.getenv("OPENAI_API_KEY"))
-            print(f"OPENAI_API_KEY found: {has_key}")
-            if not has_key:
-                raise RuntimeError(
-                    "OPENAI_API_KEY is required for OpenAI TextGrad backend."
-                )
-            return
+        if provider != "openai":
+            raise RuntimeError(
+                "Only OpenAI TextGrad backends are supported in this student version."
+            )
 
-        if provider == "groq":
-            has_key = bool(os.getenv("GROQ_API_KEY"))
-            print(f"GROQ_API_KEY found: {has_key}")
-            if not has_key:
-                raise RuntimeError(
-                    f"Missing API key for selected TextGrad backend: {self.backward_engine}. "
-                    "Add it to .env."
-                )
-            return
-
-        if provider == "gemini":
-            has_key = bool(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"))
-            print(f"GEMINI_API_KEY or GOOGLE_API_KEY found: {has_key}")
-            if not has_key:
-                raise RuntimeError(
-                    f"Missing API key for selected TextGrad backend: {self.backward_engine}. "
-                    "Add it to .env."
-                )
-            return
-
-        print(
-            f"Warning: no provider-specific API key check for TextGrad backend: "
-            f"{self.backward_engine}"
-        )
+        has_key = bool(os.getenv("OPENAI_API_KEY"))
+        print(f"OPENAI_API_KEY found: {has_key}")
+        if not has_key:
+            raise RuntimeError("OPENAI_API_KEY is required for OpenAI TextGrad backend.")
 
     def _normalize_backend_name(self, backend: str) -> str:
         """Normalize TextGrad backend names for provider checks."""
         backend = backend.strip().lower()
         if backend.startswith("experimental:"):
             backend = backend.replace("experimental:", "", 1)
+        if backend.startswith("experimental/"):
+            backend = backend.replace("experimental/", "", 1)
+        if backend.startswith("gpt-"):
+            backend = f"openai/{backend}"
         return backend
 
     def _backend_provider(self, normalized_backend: str) -> str | None:
         """Return the provider encoded by a normalized backend string."""
-        if "openai/" in normalized_backend or normalized_backend.startswith("openai"):
+        if "openai" in normalized_backend:
             return "openai"
-        if "groq/" in normalized_backend or normalized_backend.startswith("groq"):
-            return "groq"
-        if "gemini/" in normalized_backend or "google/" in normalized_backend:
-            return "gemini"
         return None
 
     def _load_env_file(self) -> None:
@@ -479,8 +380,6 @@ class TextGradPromptOptimizer:
 
             load_dotenv()
         except ImportError:
-            # The real environment should install python-dotenv.  This fallback
-            # still allows API keys provided by the shell to work.
             pass
 
     def _load_prompt_file(self, file_name: str) -> str:
@@ -494,7 +393,7 @@ class TextGradPromptOptimizer:
 
     def _litellm_model_name(self) -> str:
         """Return the LiteLLM model name for the configured TextGrad backend."""
-        return self.backward_engine.removeprefix("experimental:")
+        return self._normalize_backend_name(self.backward_engine)
 
     def _completion_text(self, response) -> str:
         """Extract assistant text from a LiteLLM completion response."""

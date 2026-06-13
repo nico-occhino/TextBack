@@ -4,7 +4,7 @@ import argparse
 from pathlib import Path
 import sys
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.config import load_config
@@ -46,7 +46,14 @@ def _load_env_file() -> None:
 
 def _litellm_model_name(backend: str) -> str:
     """Convert a TextGrad backend name to a LiteLLM model name."""
-    return backend.removeprefix("experimental:")
+    backend = backend.strip()
+    if backend.startswith("experimental:"):
+        backend = backend.removeprefix("experimental:")
+    if backend.startswith("experimental/"):
+        backend = backend.removeprefix("experimental/")
+    if backend.startswith("gpt-"):
+        return f"openai/{backend}"
+    return backend
 
 
 if __name__ == "__main__":

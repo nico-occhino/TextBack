@@ -10,14 +10,7 @@ except ImportError:
 
 
 def load_config(config_path: str | Path) -> dict[str, Any]:
-    """Load the YAML config and validate the expected sections.
-
-    Args:
-        config_path: Path to the YAML config file.
-
-    Returns:
-        Configuration values as a plain dictionary.
-    """
+    """Load and validate a TextBack YAML config."""
     config_path = Path(config_path)
     with config_path.open("r", encoding="utf-8") as file:
         if yaml is not None:
@@ -97,14 +90,7 @@ def _parse_scalar(value: str) -> Any:
 
 
 def validate_config(config: dict) -> None:
-    """Check that all required top-level config sections exist.
-
-    Args:
-        config: Loaded configuration dictionary.
-
-    Raises:
-        ValueError: If a required section is missing.
-    """
+    """Check that required top-level config sections exist."""
     required_sections = [
         "project",
         "paths",
@@ -124,11 +110,7 @@ def validate_config(config: dict) -> None:
 
 
 def create_output_dirs(config: dict[str, Any]) -> None:
-    """Create the output folders used by the project.
-
-    Args:
-        config: Loaded configuration dictionary.
-    """
+    """Create output folders used by the project."""
     paths = config["paths"]
     Path(paths["results_dir"]).mkdir(parents=True, exist_ok=True)
     Path(paths["generated_images_dir"]).mkdir(parents=True, exist_ok=True)

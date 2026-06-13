@@ -21,16 +21,7 @@ def extract_descriptors_from_prompt(
     max_descriptor_words: int,
     target_class: str | None = None,
 ) -> list[str]:
-    """Extract short visual descriptors from a prompt.
-
-    Args:
-        prompt: Prompt text to split into candidate descriptors.
-        max_descriptor_words: Maximum words allowed in one descriptor.
-        target_class: Optional target class for forbidden-term filtering.
-
-    Returns:
-        Unique descriptors in readable form.
-    """
+    """Extract short visual descriptors from a prompt."""
     descriptors = []
     seen = set()
     for fragment in re.split(r"[,;.]", prompt):

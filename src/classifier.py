@@ -7,17 +7,7 @@ class RobustBenchImageNetClassifier:
     """Robust ImageNet ResNet-50 loaded from RobustBench."""
 
     def __init__(self, model_name: str, dataset: str, threat_model: str, device: str) -> None:
-        """Load the robust classifier and ImageNet preprocessing.
-
-        Args:
-            model_name: RobustBench model name, e.g. Salman2020Do_R50.
-            dataset: RobustBench dataset name, here "imagenet".
-            threat_model: RobustBench threat model, here "Linf".
-            device: Torch device string.
-
-        Raises:
-            RuntimeError: If RobustBench imports or model loading fail.
-        """
+        """Load the robust classifier and ImageNet preprocessing."""
         try:
             import torch
             from PIL import Image
@@ -48,16 +38,7 @@ class RobustBenchImageNetClassifier:
             ) from error
 
     def predict(self, image_path: str | Path, target_class: str, top_k: int = 5) -> dict:
-        """Classify one image and return TextBack metrics.
-
-        Args:
-            image_path: Path to the image.
-            target_class: Exact ImageNet label.
-            top_k: Number of top predictions to return.
-
-        Returns:
-            Dictionary with top-1, top-k, target confidence, and target rank.
-        """
+        """Classify one image and return TextBack metrics."""
         image = self.Image.open(image_path).convert("RGB")
         input_tensor = self.preprocess(image).unsqueeze(0).to(self.device)
 
@@ -93,23 +74,12 @@ class RobustBenchImageNetClassifier:
 
         target_probability = probabilities[target_index]
         target_confidence = float(target_probability.item())
-        # Rank is one plus the number of classes with probability greater than the target probability.
         target_rank = int((probabilities > target_probability).sum().item()) + 1
         return target_confidence, target_rank
 
 
 def build_classifier(config: dict) -> RobustBenchImageNetClassifier:
-    """Build the final RobustBench classifier.
-
-    Args:
-        config: Loaded configuration dictionary.
-
-    Returns:
-        RobustBenchImageNetClassifier instance.
-
-    Raises:
-        ValueError: If classifier.provider is not robustbench.
-    """
+    """Build the final RobustBench classifier."""
     classifier_config = config["classifier"]
     provider = classifier_config.get("provider")
     if provider != "robustbench":

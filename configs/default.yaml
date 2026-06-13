@@ -24,7 +24,7 @@ experiment:
   top_k: 5
 
 textgrad:
-  backward_engine: "experimental:openai/gpt-5.4-mini"
+  backward_engine: "experimental/gpt-5.4-mini"
   cache: true
   use_llm_initial_prompt: true
   initial_prompt_temperature: 0.2

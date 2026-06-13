@@ -49,11 +49,7 @@ SUMMARY_COLUMNS = [
 
 
 def parse_args() -> argparse.Namespace:
-    """Parse command line arguments.
-
-    Returns:
-        Parsed argparse namespace.
-    """
+    """Parse command line arguments."""
     parser = argparse.ArgumentParser(description="Evaluate a real ImageNet subset.")
     parser.add_argument("--config", default="configs/default.yaml", help="Path to the YAML config file.")
     return parser.parse_args()
@@ -105,14 +101,7 @@ def main() -> None:
 
 
 def _find_images(class_dir: Path) -> list[Path]:
-    """Find image files inside one class folder.
-
-    Args:
-        class_dir: Directory containing real images for one class.
-
-    Returns:
-        Sorted list of image paths.
-    """
+    """Find image files inside one class folder."""
     return sorted(
         path
         for path in class_dir.iterdir()
@@ -121,16 +110,7 @@ def _find_images(class_dir: Path) -> list[Path]:
 
 
 def _prediction_row(target_class: str, image_path: Path, result: dict) -> dict:
-    """Convert one classifier result into a CSV row.
-
-    Args:
-        target_class: Folder name and expected ImageNet label.
-        image_path: Classified image path.
-        result: Output from classifier.predict().
-
-    Returns:
-        Flat dictionary for results/real_subset_predictions.csv.
-    """
+    """Convert one classifier result into a CSV row."""
     target_rank = result["target_rank"]
     return {
         "target_class": target_class,
@@ -145,15 +125,7 @@ def _prediction_row(target_class: str, image_path: Path, result: dict) -> dict:
 
 
 def _summary_row(target_class: str, rows: list[dict]) -> dict:
-    """Compute class-level metrics from per-image rows.
-
-    Args:
-        target_class: Expected ImageNet label.
-        rows: Per-image prediction rows for this class.
-
-    Returns:
-        Flat dictionary for results/real_subset_summary.csv.
-    """
+    """Compute class-level metrics from per-image rows."""
     n_images = len(rows)
     if n_images == 0:
         return {
@@ -177,25 +149,13 @@ def _summary_row(target_class: str, rows: list[dict]) -> dict:
 
 
 def _mean_bool(values) -> float:
-    """Compute the average of boolean values.
-
-    Args:
-        values: Iterable of booleans.
-
-    Returns:
-        Fraction of True values.
-    """
+    """Compute the average of boolean values."""
     values = list(values)
     return sum(int(value) for value in values) / len(values) if values else 0.0
 
 
 def _write_header(path: Path, fieldnames: list[str]) -> None:
-    """Create a CSV file with only its header.
-
-    Args:
-        path: CSV path.
-        fieldnames: Column names.
-    """
+    """Create a CSV file with only its header."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as file:
         writer = csv.DictWriter(file, fieldnames=fieldnames)
@@ -203,13 +163,7 @@ def _write_header(path: Path, fieldnames: list[str]) -> None:
 
 
 def _append_row(path: Path, row: dict, fieldnames: list[str]) -> None:
-    """Append one row to an existing CSV file.
-
-    Args:
-        path: CSV path.
-        row: Values to append.
-        fieldnames: Column names.
-    """
+    """Append one row to an existing CSV file."""
     with path.open("a", newline="", encoding="utf-8") as file:
         writer = csv.DictWriter(file, fieldnames=fieldnames)
         writer.writerow(row)

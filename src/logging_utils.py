@@ -7,13 +7,7 @@ from typing import Iterable
 
 
 def append_csv_row(path: str | Path, row: dict, fieldnames: Iterable[str]) -> None:
-    """Append one row to a CSV file, writing the header if needed.
-
-    Args:
-        path: CSV output path.
-        row: Dictionary with row values.
-        fieldnames: Column order for the CSV file.
-    """
+    """Append one CSV row, writing the header if needed."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     file_exists = path.exists()
@@ -26,12 +20,7 @@ def append_csv_row(path: str | Path, row: dict, fieldnames: Iterable[str]) -> No
 
 
 def append_jsonl_record(path: str | Path, record: dict) -> None:
-    """Append one JSON object to a JSONL file.
-
-    Args:
-        path: JSONL output path.
-        record: JSON-serializable dictionary.
-    """
+    """Append one JSON object to a JSONL file."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -40,12 +29,7 @@ def append_jsonl_record(path: str | Path, record: dict) -> None:
 
 
 def write_json(path: str | Path, data: dict) -> None:
-    """Write a dictionary to a JSON file.
-
-    Args:
-        path: JSON output path.
-        data: JSON-serializable dictionary.
-    """
+    """Write a dictionary to JSON."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
