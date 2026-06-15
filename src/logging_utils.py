@@ -1,5 +1,3 @@
-"""Small logging helpers for CSV and JSONL files."""
-
 import csv
 import json
 from pathlib import Path

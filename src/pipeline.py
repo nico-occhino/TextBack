@@ -185,7 +185,6 @@ class TextBackPipeline:
         return best_prompt
 
     def _get_initial_prompt(self, target_class: str, cache: dict[str, str]) -> str:
-        """Load, generate, or fall back to an initial prompt for one class."""
         use_llm = bool(self.config["textgrad"].get("use_llm_initial_prompt", True))
         if not use_llm:
             prompt = self._make_fallback_initial_prompt(target_class)
@@ -254,7 +253,6 @@ class TextBackPipeline:
         return prompt
 
     def _make_fallback_initial_prompt(self, target_class: str) -> str:
-        """Create a deterministic fallback prompt for one target class."""
         prompts = {
             "tabby": (
                 "Warm indoor scene with orange-black striped soft textures, plush "

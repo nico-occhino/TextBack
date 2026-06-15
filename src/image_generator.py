@@ -1,13 +1,9 @@
-"""Image generation for TextBack using Hugging Face Diffusers."""
-
 from pathlib import Path
 
 
 class LocalDiffusersGenerator:
-    """Local Stable Diffusion generator based on Hugging Face Diffusers."""
 
     def __init__(self, config: dict) -> None:
-        """Load a Diffusers text-to-image pipeline."""
         import torch
         from diffusers import DiffusionPipeline
 
@@ -15,10 +11,10 @@ class LocalDiffusersGenerator:
         self.generator_config = config["image_generator"]
 
         requested_device = config["project"].get("device", "cpu")
-        self.device = "cuda" if requested_device == "cuda" and torch.cuda.is_available() else "cpu"
+        self.device = "cuda" if requested_device == "cuda" and torch.cuda.is_available() else "cpu"   
         dtype = self._select_dtype(torch)
         model_name = self.generator_config["model_name"]
-        disable_safety_checker = bool(self.generator_config.get("disable_safety_checker", False))
+        disable_safety_checker = bool(self.generator_config.get("disable_safety_checker", False))  # da eliminare?
 
         load_kwargs = {"torch_dtype": dtype}
         if disable_safety_checker:
@@ -64,7 +60,6 @@ class LocalDiffusersGenerator:
         return output_path
 
     def _select_dtype(self, torch):
-        """Choose the dtype used to load the diffusion model."""
         if bool(self.generator_config.get("force_float32", False)):
             return torch.float32
         if bool(self.generator_config.get("use_float16", True)) and self.device == "cuda":
@@ -72,7 +67,6 @@ class LocalDiffusersGenerator:
         return torch.float32
 
     def _warn_if_almost_black(self, image) -> None:
-        """Warn when a generated image looks almost entirely black."""
         from PIL import ImageStat
 
         grayscale = image.convert("L")
@@ -86,7 +80,6 @@ class LocalDiffusersGenerator:
 
 
 def build_image_generator(config: dict):
-    """Create the configured image generator."""
     generator_config = config["image_generator"]
     provider = generator_config.get("provider", "diffusers")
 

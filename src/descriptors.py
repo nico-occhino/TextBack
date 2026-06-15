@@ -1,5 +1,3 @@
-"""Descriptor memory helpers for TextBack prompt optimization."""
-
 import re
 
 from src.textgrad_optimizer import contains_forbidden_terms
@@ -21,7 +19,6 @@ def extract_descriptors_from_prompt(
     max_descriptor_words: int,
     target_class: str | None = None,
 ) -> list[str]:
-    """Extract short visual descriptors from a prompt."""
     descriptors = []
     seen = set()
     for fragment in re.split(r"[,;.]", prompt):
@@ -49,7 +46,6 @@ def update_descriptor_memory(
     classifier_result: dict,
     config: dict,
 ) -> dict[str, list[str]]:
-    """Update positive descriptor memory from one optimization result."""
     memory_config = config.get("descriptor_memory", {})
     if not bool(memory_config.get("enabled", False)):
         return memory
