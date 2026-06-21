@@ -1,10 +1,3 @@
-"""Main TextBack pipeline.
-
-The optimization loop is intentionally direct:
-TextGrad prompt variable -> Diffusers image -> RobustResNet50 prediction ->
-TextGrad textual loss/backward/TGD step.
-"""
-
 import json
 from pathlib import Path
 import random
@@ -80,13 +73,11 @@ def slugify(text: str) -> str:
 
 
 class TextBackPipeline:
-    """Run TextGrad optimization and inference evaluation."""
 
     def __init__(self, config: dict) -> None:
-        """Initialize TextGrad, generator, and classifier."""
         self.config = config
         self.paths = config["paths"]
-        self.experiment = config["experiment"]
+        self.experiment = config["experiment"] 
 
         create_output_dirs(config)
         set_seed(int(config["project"].get("seed", 42)))
@@ -99,7 +90,6 @@ class TextBackPipeline:
         self.descriptor_memory = {}
 
     def run_optimization(self) -> dict[str, str]:
-        """Optimize prompts for all configured target classes."""
         self._reset_optimization_logs()
         final_prompts = {}
         self.best_prompt_metadata = {}
@@ -124,7 +114,6 @@ class TextBackPipeline:
         return final_prompts
 
     def _optimize_one_class(self, target_class: str, initial_prompt: str) -> str:
-        """Run TextGrad prompt optimization for one class."""
         prompt_variable = self.textgrad_optimizer.make_prompt_variable(initial_prompt, target_class)
         optimizer = self.textgrad_optimizer.make_optimizer(prompt_variable)
         best_prompt = initial_prompt
@@ -284,7 +273,6 @@ class TextBackPipeline:
         )
 
     def _load_initial_prompt_cache(self) -> dict[str, str]:
-        """Load cached LLM initial prompts when available."""
         path = Path(self.paths["results_dir"]) / "initial_prompts.json"
         if not path.exists():
             return {}
@@ -293,7 +281,6 @@ class TextBackPipeline:
             return json.load(file)
 
     def _save_initial_prompt_cache(self, cache: dict[str, str]) -> None:
-        """Save cached LLM initial prompts for reproducible reruns."""
         write_json(Path(self.paths["results_dir"]) / "initial_prompts.json", cache)
 
     def _record_initial_prompt_metadata(
@@ -305,7 +292,6 @@ class TextBackPipeline:
         attempts: int | None = None,
         error: str = "",
     ) -> None:
-        """Save where the initial prompt came from for one class."""
         self.initial_prompt_metadata[target_class] = {
             "source": source,
             "prompt": prompt,
@@ -319,7 +305,6 @@ class TextBackPipeline:
         )
 
     def run_inference(self) -> dict[str, float]:
-        """Generate images from final prompts and evaluate activation rate."""
         self._reset_inference_logs()
         final_prompts = self._load_final_prompts()
         activation_rates = {}
@@ -340,7 +325,7 @@ class TextBackPipeline:
                     target_class=target_class,
                     top_k=int(self.experiment.get("top_k", 5)),
                 )
-
+ 
                 top1_correct = classifier_result["target_rank"] == 1
                 top5_correct = (
                     classifier_result["target_rank"] is not None
@@ -367,13 +352,11 @@ class TextBackPipeline:
         return activation_rates
 
     def _optimization_image_path(self, target_class: str, iteration: int) -> Path:
-        """Build the optimization image path for one iteration."""
         image_dir = Path(self.paths["generated_images_dir"]) / slugify(target_class) / "optimization"
         image_dir.mkdir(parents=True, exist_ok=True)
         return image_dir / f"step_{iteration:03d}.png"
 
     def _inference_image_path(self, target_class: str, image_index: int) -> Path:
-        """Build the inference image path for one generated sample."""
         image_dir = Path(self.paths["generated_images_dir"]) / slugify(target_class) / "inference"
         image_dir.mkdir(parents=True, exist_ok=True)
         return image_dir / f"sample_{image_index:03d}.png"
@@ -388,7 +371,6 @@ class TextBackPipeline:
         image_path: Path,
         classifier_result: dict,
     ) -> None:
-        """Save one optimization step to CSV and JSONL."""
         row = {
             "target_class": target_class,
             "iteration": iteration,
@@ -443,7 +425,6 @@ class TextBackPipeline:
         append_csv_row(Path(self.paths["results_dir"]) / "inference_results.csv", row, INFERENCE_COLUMNS)
 
     def _save_final_prompts(self, final_prompts: dict[str, str]) -> None:
-        """Save final prompts after optimization."""
         cleaned_prompts = {
             target_class: self.textgrad_optimizer.clean_final_prompt(prompt)
             for target_class, prompt in final_prompts.items()
@@ -453,14 +434,12 @@ class TextBackPipeline:
         write_json(results_dir / "best_prompt_metadata.json", self.best_prompt_metadata)
 
     def _save_descriptor_memory(self) -> None:
-        """Save positive descriptor memory for inspection and reproducibility."""
         write_json(
             Path(self.paths["results_dir"]) / "descriptor_memory.json",
             self.descriptor_memory,
         )
 
     def _reset_optimization_logs(self) -> None:
-        """Remove old optimization outputs before a new run."""
         results_dir = Path(self.paths["results_dir"])
         for file_name in [
             "final_prompts.json",
@@ -475,7 +454,6 @@ class TextBackPipeline:
                 path.unlink()
 
     def _reset_inference_logs(self) -> None:
-        """Remove old inference outputs before a new run."""
         results_dir = Path(self.paths["results_dir"])
         for file_name in [
             "inference_results.csv",
@@ -488,7 +466,6 @@ class TextBackPipeline:
                 path.unlink()
 
     def _summarize_inference_results(self, results: list[dict]) -> dict:
-        """Compute class-level inference metrics from classifier outputs."""
         if not results:
             return {
                 "top1_activation_rate": 0.0,
@@ -519,7 +496,6 @@ class TextBackPipeline:
         }
 
     def _load_final_prompts(self) -> dict[str, str]:
-        """Load prompts saved by run_optimization()."""
         path = Path(self.paths["results_dir"]) / "final_prompts.json"
         if not path.exists():
             raise FileNotFoundError("Run optimization first: results/final_prompts.json is missing.")
@@ -528,19 +504,16 @@ class TextBackPipeline:
             return json.load(file)
 
     def _optimization_seed(self, iteration: int) -> int:
-        """Return a reproducible seed for one optimization image."""
         base_seed = int(self.config["image_generator"].get("base_seed", 42))
         return base_seed + iteration
 
     def _inference_seed(self, image_index: int) -> int:
-        """Return a reproducible, varying seed for one inference image."""
         base_seed = int(self.config["image_generator"].get("base_seed", 42))
         if not bool(self.config["image_generator"].get("vary_seed", True)):
             return base_seed
         return base_seed + 1000 + image_index
 
     def _textgrad_value(self, variable) -> str:
-        """Read a TextGrad variable value across TextGrad versions."""
         if hasattr(variable, "value"):
             return str(variable.value)
         if hasattr(variable, "get_value"):

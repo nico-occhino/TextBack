@@ -8,6 +8,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 from PIL import Image
 
@@ -17,19 +18,10 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from src.config import load_config
 
 
-REPORT_CASES = [
-    ("cowboy hat", "success"),
-    ("volcano", "success"),
-    ("sports car", "partial"),
-    ("tabby", "failure"),
-]
-
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Create report tables and figures from saved TextBack results.")
     parser.add_argument("--config", default="configs/final.yaml")
     parser.add_argument("--output-dir", default="results/report_assets")
-    parser.add_argument("--gradcam-metadata", default="results/gradcam/gradcam_metadata.csv")
     return parser.parse_args()
 
 
@@ -37,6 +29,7 @@ def main() -> None:
     args = parse_args()
     config = load_config(args.config)
     results_dir = project_path(config["paths"]["results_dir"])
+    xai_dir = results_dir / "xai"
     output_dir = project_path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -47,7 +40,8 @@ def main() -> None:
     create_main_results_table(config, results_dir, inference_results, output_dir)
     create_optimization_trajectory_plot(config, results_dir, output_dir)
     create_confusion_table(config, inference_results, output_dir)
-    create_gradcam_case_figure(config, inference_results, project_path(args.gradcam_metadata), output_dir)
+    create_occlusion_summary_assets(xai_dir, output_dir)
+    create_selected_xai_figures(xai_dir, output_dir)
 
     print(f"Report assets written to {output_dir}")
 
@@ -106,7 +100,6 @@ def create_optimization_trajectory_plot(config: dict, results_dir: Path, output_
     axis.legend(fontsize=8)
     figure.tight_layout()
     figure.savefig(output_dir / "optimization_trajectory.png", dpi=200)
-    figure.savefig(output_dir / "optimization_trajectory.pdf")
     plt.close(figure)
 
 
@@ -124,101 +117,131 @@ def create_confusion_table(config: dict, inference_results: pd.DataFrame, output
     write_confusion_latex(table, output_dir / "confusion_distribution_table.tex")
 
 
-def create_gradcam_case_figure(
-    config: dict,
-    inference_results: pd.DataFrame,
-    metadata_path: Path,
-    output_dir: Path,
-) -> None:
-    if not metadata_path.exists():
-        print(f"Grad-CAM metadata not found: {metadata_path}")
-        print("Run: python scripts/run_gradcam.py --config configs/final.yaml --max-generated-per-class 20 --max-real-per-class 1")
+def create_occlusion_summary_assets(xai_dir: Path, output_dir: Path) -> None:
+    summary_path = xai_dir / "occlusion_summary.csv"
+    results_path = xai_dir / "occlusion_results.csv"
+
+    if summary_path.exists():
+        summary = pd.read_csv(summary_path)
+        summary.to_csv(output_dir / "xai_occlusion_summary_table.csv", index=False)
+        write_occlusion_summary_latex(summary, output_dir / "xai_occlusion_summary_table.tex")
+    else:
+        print(f"Occlusion summary not found: {summary_path}")
+
+    if results_path.exists():
+        occlusion_results = pd.read_csv(results_path)
+        create_relative_occlusion_boxplot(occlusion_results, output_dir / "xai_relative_occlusion_boxplot.png")
+    else:
+        print(f"Occlusion results not found: {results_path}")
+
+
+def create_relative_occlusion_boxplot(occlusion_results: pd.DataFrame, output_path: Path) -> None:
+    if occlusion_results.empty:
+        print("Occlusion results are empty.")
         return
 
-    metadata = pd.read_csv(metadata_path)
-    if metadata.empty:
-        print(f"Grad-CAM metadata is empty: {metadata_path}")
+    grouped = []
+    labels = []
+    for target_class, rows in occlusion_results.groupby("target_class", sort=False):
+        values = pd.to_numeric(rows["relative_max_occlusion_drop"], errors="coerce").dropna()
+        if values.empty:
+            continue
+        grouped.append(values.to_numpy())
+        labels.append(target_class)
+
+    if not grouped:
+        print("No relative occlusion values available for boxplot.")
         return
 
-    metadata["target_rank"] = pd.to_numeric(metadata["target_rank"], errors="coerce")
-    metadata["target_confidence"] = pd.to_numeric(metadata["target_confidence"], errors="coerce")
-    selected_rows = []
-
-    figure, axes = plt.subplots(2, 2, figsize=(12, 8))
-    for axis, (target_class, case_type) in zip(axes.ravel(), REPORT_CASES):
-        row = select_gradcam_row(metadata, target_class, case_type)
-        if row is None:
-            axis.axis("off")
-            axis.set_title(f"{target_class}: missing Grad-CAM")
-            continue
-
-        output_path = project_path(row["output_path"])
-        if not output_path.exists():
-            axis.axis("off")
-            axis.set_title(f"{target_class}: file not found")
-            print(f"Missing Grad-CAM image: {output_path}")
-            continue
-
-        image = Image.open(output_path).convert("RGB")
-        axis.imshow(image)
-        axis.axis("off")
-        axis.set_title(
-            f"{target_class} ({case_type})\n"
-            f"top-1: {row.get('top1_label', '')}, rank: {int(row['target_rank'])}, "
-            f"conf: {float(row['target_confidence']):.3f}",
-            fontsize=9,
-        )
-        selected_rows.append(row.to_dict())
-
+    figure, axis = plt.subplots(figsize=(8, 4.8))
+    axis.boxplot(grouped, labels=labels, showfliers=False)
+    axis.set_ylabel("Relative max occlusion drop")
+    axis.set_title("Occlusion sensitivity by target class")
+    axis.grid(True, axis="y", alpha=0.3)
+    figure.autofmt_xdate(rotation=20)
     figure.tight_layout()
-    figure.savefig(output_dir / "gradcam_four_examples.png", dpi=200)
-    figure.savefig(output_dir / "gradcam_four_examples.pdf")
+    figure.savefig(output_path, dpi=200)
     plt.close(figure)
 
-    if selected_rows:
-        pd.DataFrame(selected_rows).to_csv(output_dir / "gradcam_four_examples_selection.csv", index=False)
 
-    if not has_failure_gradcam(metadata, "tabby"):
-        print("No generated tabby Grad-CAM with target_rank > 5 was found in metadata.")
-        print("For a clearer failure figure, rerun Grad-CAM with --max-generated-per-class 20.")
+def create_selected_xai_figures(xai_dir: Path, output_dir: Path) -> None:
+    selected_path = xai_dir / "xai_selected_examples.csv"
+    if not selected_path.exists():
+        print(f"Selected XAI examples not found: {selected_path}")
+        print("Run: python scripts/run_xai.py --config configs/final.yaml --max-images-per-class 100")
+        return
 
+    selected = pd.read_csv(selected_path)
+    if selected.empty:
+        print(f"Selected XAI examples are empty: {selected_path}")
+        return
 
-def select_gradcam_row(metadata: pd.DataFrame, target_class: str, case_type: str):
-    rows = metadata[
-        (metadata["source_type"] == "generated")
-        & (metadata["target_class"] == target_class)
-    ].copy()
-    if rows.empty:
-        return None
-
-    if case_type == "success":
-        preferred = rows[rows["target_rank"] == 1]
-        if preferred.empty:
-            preferred = rows[rows["target_rank"] <= 5]
-        if preferred.empty:
-            preferred = rows
-        return preferred.sort_values(["target_rank", "target_confidence"], ascending=[True, False]).iloc[0]
-
-    if case_type == "partial":
-        preferred = rows[(rows["target_rank"] > 1) & (rows["target_rank"] <= 5)]
-        if preferred.empty:
-            preferred = rows[rows["target_rank"] <= 5]
-        if preferred.empty:
-            preferred = rows
-        return preferred.sort_values(["target_rank", "target_confidence"], ascending=[True, False]).iloc[0]
-
-    preferred = rows[rows["target_rank"] > 5]
-    if preferred.empty:
-        preferred = rows
-    return preferred.sort_values(["target_rank", "target_confidence"], ascending=[False, False]).iloc[0]
+    create_heatmap_figure(
+        selected,
+        heatmap_column="gradcam_npy_path",
+        title="Selected Target Grad-CAM Examples",
+        output_path=output_dir / "gradcam_selected_examples.png",
+        cmap="magma",
+    )
+    create_heatmap_figure(
+        selected,
+        heatmap_column="occlusion_npy_path",
+        title="Selected Occlusion Sensitivity Examples",
+        output_path=output_dir / "occlusion_selected_examples.png",
+        cmap="hot",
+    )
 
 
-def has_failure_gradcam(metadata: pd.DataFrame, target_class: str) -> bool:
-    rows = metadata[
-        (metadata["source_type"] == "generated")
-        & (metadata["target_class"] == target_class)
-    ]
-    return bool((rows["target_rank"] > 5).any())
+def create_heatmap_figure(
+    selected: pd.DataFrame,
+    heatmap_column: str,
+    title: str,
+    output_path: Path,
+    cmap: str,
+) -> None:
+    if heatmap_column not in selected.columns:
+        print(f"Selected XAI metadata does not contain {heatmap_column}.")
+        return
+
+    n_rows = len(selected)
+    figure, axes = plt.subplots(n_rows, 3, figsize=(12, 3.2 * n_rows), squeeze=False)
+    for row_index, row in enumerate(selected.to_dict("records")):
+        image = Image.open(project_path(row["image_path"])).convert("RGB")
+        heatmap = np.load(project_path(row[heatmap_column]))
+        normalized = normalize_heatmap(heatmap)
+        visual_image = image.resize((normalized.shape[1], normalized.shape[0]))
+
+        axes[row_index, 0].imshow(visual_image)
+        axes[row_index, 0].set_title("Original", fontsize=9)
+        axes[row_index, 0].axis("off")
+
+        axes[row_index, 1].imshow(visual_image)
+        axes[row_index, 1].imshow(normalized, cmap=cmap, alpha=0.45)
+        axes[row_index, 1].set_title(
+            f"{row['target_class']} ({row['case_type']})\n"
+            f"top-1: {row.get('top1_label', '')}, rank: {int(row['target_rank'])}",
+            fontsize=9,
+        )
+        axes[row_index, 1].axis("off")
+
+        heat = axes[row_index, 2].imshow(normalized, cmap=cmap)
+        axes[row_index, 2].set_title("Heatmap", fontsize=9)
+        axes[row_index, 2].axis("off")
+        figure.colorbar(heat, ax=axes[row_index, 2], fraction=0.046, pad=0.04)
+
+    figure.suptitle(title, fontsize=12)
+    figure.tight_layout()
+    figure.savefig(output_path, dpi=200)
+    plt.close(figure)
+
+
+def normalize_heatmap(heatmap: np.ndarray) -> np.ndarray:
+    heatmap = np.asarray(heatmap, dtype=np.float32)
+    heatmap = np.maximum(heatmap, 0.0)
+    max_value = float(heatmap.max())
+    if max_value > 0:
+        heatmap = heatmap / max_value
+    return heatmap
 
 
 def write_main_results_latex(table: pd.DataFrame, path: Path) -> None:
@@ -236,7 +259,7 @@ def write_main_results_latex(table: pd.DataFrame, path: Path) -> None:
             f"{format_float(row['AMR@1'])} & "
             f"{format_float(row['AMR@5'])} & "
             f"{format_float(row['Real Top-1'])} & "
-            f"{format_float(row['Real Top-5'])} \\\\" 
+            f"{format_float(row['Real Top-5'])} \\\\"
         )
     lines.extend(
         [
@@ -270,6 +293,35 @@ def write_confusion_latex(table: pd.DataFrame, path: Path) -> None:
             r"\end{tabular}",
             r"\caption{Most frequent wrong top-1 predictions on generated inference images.}",
             r"\label{tab:confusion_distribution}",
+            r"\end{table}",
+        ]
+    )
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def write_occlusion_summary_latex(table: pd.DataFrame, path: Path) -> None:
+    lines = [
+        r"\begin{table}[h]",
+        r"\centering",
+        r"\begin{tabular}{lcccc}",
+        r"\hline",
+        r"Class & N & Mean max drop & Mean relative max drop & Mean relative positive drop \\",
+        r"\hline",
+    ]
+    for row in table.to_dict("records"):
+        lines.append(
+            f"{latex_escape(row['target_class'])} & "
+            f"{int(row['n_images'])} & "
+            f"{format_float(row['mean_max_occlusion_drop'])} & "
+            f"{format_float(row['mean_relative_max_occlusion_drop'])} & "
+            f"{format_float(row['mean_relative_positive_occlusion_drop'])} \\\\"
+        )
+    lines.extend(
+        [
+            r"\hline",
+            r"\end{tabular}",
+            r"\caption{Occlusion sensitivity summary over generated inference images.}",
+            r"\label{tab:xai_occlusion_summary}",
             r"\end{table}",
         ]
     )

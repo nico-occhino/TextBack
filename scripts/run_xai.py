@@ -1,20 +1,12 @@
-from __future__ import annotations
-
 import argparse
-import csv
+import re
 import sys
 from pathlib import Path
-import re
 
-import matplotlib
-
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
 from captum.attr import LayerAttribution, LayerGradCam
-from captum.attr import visualization as viz
 from PIL import Image
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -24,127 +16,183 @@ from src.classifier import build_classifier
 from src.config import load_config
 
 
-REPORT_CASES = [
-    ("cowboy hat", "success"),
-    ("volcano", "success"),
-    ("sports car", "partial"),
-    ("tabby", "failure"),
-]
+GRADCAM_LAYER_PATH = "model.model.layer4[-1].conv2"
 
-METADATA_COLUMNS = [
+OCCLUSION_COLUMNS = [
     "target_class",
-    "case_type",
     "image_path",
-    "gradcam_path",
-    "occlusion_path",
     "top1_label",
     "target_rank",
     "target_confidence",
+    "base_target_confidence",
     "max_occlusion_drop",
     "mean_positive_occlusion_drop",
+    "relative_max_occlusion_drop",
+    "relative_mean_positive_occlusion_drop",
+]
+
+OCCLUSION_SUMMARY_COLUMNS = [
+    "target_class",
+    "n_images",
+    "amr_at_1",
+    "amr_at_5",
+    "mean_target_confidence",
+    "median_target_confidence",
+    "mean_max_occlusion_drop",
+    "median_max_occlusion_drop",
+    "mean_relative_max_occlusion_drop",
+    "median_relative_max_occlusion_drop",
+    "mean_positive_occlusion_drop",
+    "mean_relative_positive_occlusion_drop",
+]
+
+SELECTED_COLUMNS = [
+    "target_class",
+    "case_type",
+    "image_path",
+    "top1_label",
+    "target_rank",
+    "target_confidence",
+    "amr_at_1",
+    "amr_at_5",
+    "gradcam_npy_path",
+    "occlusion_npy_path",
 ]
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run TextBack XAI on selected generated examples.")
+def parse_args():
+    parser = argparse.ArgumentParser(description="Compute TextBack post-hoc XAI artifacts.")
     parser.add_argument("--config", default="configs/final.yaml")
-    parser.add_argument("--output-dir", default="results/xai")
     parser.add_argument("--patch-size", type=int, default=56)
     parser.add_argument("--stride", type=int, default=28)
+    parser.add_argument("--max-images-per-class", type=int, default=100)
     return parser.parse_args()
 
 
-def main() -> None:
+def main():
     args = parse_args()
     config = load_config(args.config)
-    output_dir = project_path(args.output_dir)
+    output_dir = project_path("results/xai")
+    selected_dir = output_dir / "selected"
     output_dir.mkdir(parents=True, exist_ok=True)
+    selected_dir.mkdir(parents=True, exist_ok=True)
 
     classifier = build_classifier(config)
-    target_layer, layer_name = find_gradcam_layer(classifier.model)
-    print(f"Selected Grad-CAM layer: {layer_name}")
+    target_layer = resolve_layer(classifier.model, GRADCAM_LAYER_PATH)
+    print(f"Selected Grad-CAM layer: {GRADCAM_LAYER_PATH}")
 
-    inference_path = project_path(config["paths"]["results_dir"]) / "inference_results.csv"
+    inference_path = project_path("results/inference_results.csv")
     inference_results = pd.read_csv(inference_path)
-    inference_results["target_rank"] = pd.to_numeric(inference_results["target_rank"])
-    inference_results["target_confidence"] = pd.to_numeric(inference_results["target_confidence"])
+    inference_results["target_rank"] = pd.to_numeric(inference_results["target_rank"], errors="coerce")
+    inference_results["target_confidence"] = pd.to_numeric(
+        inference_results["target_confidence"],
+        errors="coerce",
+    )
 
-    metadata_path = output_dir / "xai_metadata.csv"
-    if metadata_path.exists():
-        metadata_path.unlink()
+    occlusion_rows = []
+    selected_rows = []
 
-    metadata_rows = []
-    for target_class, case_type in REPORT_CASES:
-        row = select_case_row(inference_results, target_class, case_type)
-        if row is None:
-            print(f"No inference example found for {target_class} ({case_type}).")
+    for target_class in config["experiment"]["target_classes"]:
+        class_rows = inference_results[inference_results["target_class"] == target_class].copy()
+        class_rows = class_rows.dropna(subset=["target_rank", "target_confidence"])
+        if class_rows.empty:
+            print(f"No inference rows found for {target_class}.")
             continue
 
-        image_path = project_path(row["image_path"])
-        class_slug = slugify(target_class)
-        gradcam_path = output_dir / class_slug / f"{class_slug}_gradcam.png"
-        occlusion_path = output_dir / class_slug / f"{class_slug}_occlusion.png"
+        for _, row in class_rows.head(args.max_images_per_class).iterrows():
+            occlusion_rows.append(
+                compute_occlusion_result_row(
+                    classifier,
+                    row,
+                    target_class,
+                    patch_size=args.patch_size,
+                    stride=args.stride,
+                )
+            )
 
-        gradcam_result = save_gradcam(classifier, image_path, target_class, target_layer, gradcam_path)
-        occlusion_result = save_occlusion(
+        selected = select_representative_row(inference_results, target_class)
+        if selected is None:
+            continue
+
+        selected_row, case_type, amr_at_1, amr_at_5 = selected
+        image_path = project_path(selected_row["image_path"])
+        class_slug = slugify(target_class)
+        class_selected_dir = selected_dir / class_slug
+        class_selected_dir.mkdir(parents=True, exist_ok=True)
+        gradcam_path = class_selected_dir / f"{class_slug}_gradcam.npy"
+        occlusion_path = class_selected_dir / f"{class_slug}_occlusion.npy"
+
+        gradcam_heatmap = compute_gradcam_heatmap(classifier, image_path, target_class, target_layer)
+        occlusion_heatmap, _ = compute_occlusion_heatmap(
             classifier,
             image_path,
             target_class,
-            occlusion_path,
             patch_size=args.patch_size,
             stride=args.stride,
         )
+        np.save(gradcam_path, gradcam_heatmap)
+        np.save(occlusion_path, occlusion_heatmap)
 
-        metadata_row = {
-            "target_class": target_class,
-            "case_type": case_type,
-            "image_path": str(image_path),
-            "gradcam_path": str(gradcam_path),
-            "occlusion_path": str(occlusion_path),
-            "top1_label": gradcam_result["top1_label"],
-            "target_rank": gradcam_result["target_rank"],
-            "target_confidence": gradcam_result["target_confidence"],
-            "max_occlusion_drop": occlusion_result["max_drop"],
-            "mean_positive_occlusion_drop": occlusion_result["mean_positive_drop"],
-        }
-        append_metadata(metadata_path, metadata_row)
-        metadata_rows.append(metadata_row)
+        selected_rows.append(
+            {
+                "target_class": target_class,
+                "case_type": case_type,
+                "image_path": project_relative_text(image_path),
+                "top1_label": selected_row["top1_label"],
+                "target_rank": int(selected_row["target_rank"]),
+                "target_confidence": float(selected_row["target_confidence"]),
+                "amr_at_1": amr_at_1,
+                "amr_at_5": amr_at_5,
+                "gradcam_npy_path": project_relative_text(gradcam_path),
+                "occlusion_npy_path": project_relative_text(occlusion_path),
+            }
+        )
 
-    make_summary_figure(metadata_rows, "gradcam_path", output_dir / "gradcam_four_examples.png", output_dir / "gradcam_four_examples.pdf")
-    make_summary_figure(metadata_rows, "occlusion_path", output_dir / "occlusion_four_examples.png", output_dir / "occlusion_four_examples.pdf")
-    print(f"XAI outputs written to {output_dir}")
+    occlusion_results = pd.DataFrame(occlusion_rows, columns=OCCLUSION_COLUMNS)
+    occlusion_results.to_csv(output_dir / "occlusion_results.csv", index=False)
 
+    occlusion_summary = summarize_occlusion_results(occlusion_results)
+    occlusion_summary.to_csv(output_dir / "occlusion_summary.csv", index=False)
 
-def select_case_row(results: pd.DataFrame, target_class: str, case_type: str):
-    rows = results[results["target_class"] == target_class].copy()
-    if rows.empty:
-        return None
+    selected_examples = pd.DataFrame(selected_rows, columns=SELECTED_COLUMNS)
+    selected_examples.to_csv(output_dir / "xai_selected_examples.csv", index=False)
 
-    if case_type == "success":
-        preferred = rows[rows["target_rank"] == 1]
-        if preferred.empty:
-            preferred = rows[rows["target_rank"] <= 5]
-        if preferred.empty:
-            preferred = rows
-        return preferred.sort_values(["target_rank", "target_confidence"], ascending=[True, False]).iloc[0]
-
-    if case_type == "partial":
-        preferred = rows[(rows["target_rank"] > 1) & (rows["target_rank"] <= 5)]
-        if preferred.empty:
-            preferred = rows[rows["target_rank"] <= 5]
-        if preferred.empty:
-            preferred = rows
-        return preferred.sort_values(["target_rank", "target_confidence"], ascending=[True, False]).iloc[0]
-
-    preferred = rows[rows["target_rank"] > 5]
-    if preferred.empty:
-        preferred = rows
-    return preferred.sort_values("target_confidence", ascending=False).iloc[0]
+    print(f"XAI artifacts written to {output_dir}")
 
 
-def save_gradcam(classifier, image_path: Path, target_class: str, target_layer, output_path: Path) -> dict:
+def compute_occlusion_result_row(classifier, row, target_class: str, patch_size: int, stride: int) -> dict:
+    image_path = project_path(row["image_path"])
+    heatmap, stats = compute_occlusion_heatmap(
+        classifier,
+        image_path,
+        target_class,
+        patch_size=patch_size,
+        stride=stride,
+    )
+    base_confidence = stats["base_target_confidence"]
+    max_drop = stats["max_occlusion_drop"]
+    mean_positive_drop = stats["mean_positive_occlusion_drop"]
+    relative_max_drop = max_drop / base_confidence if base_confidence > 0 else 0.0
+    relative_mean_drop = mean_positive_drop / base_confidence if base_confidence > 0 else 0.0
+
+    return {
+        "target_class": target_class,
+        "image_path": project_relative_text(image_path),
+        "top1_label": row["top1_label"],
+        "target_rank": int(row["target_rank"]),
+        "target_confidence": float(row["target_confidence"]),
+        "base_target_confidence": base_confidence,
+        "max_occlusion_drop": max_drop,
+        "mean_positive_occlusion_drop": mean_positive_drop,
+        "relative_max_occlusion_drop": relative_max_drop,
+        "relative_mean_positive_occlusion_drop": relative_mean_drop,
+    }
+
+
+def compute_gradcam_heatmap(classifier, image_path: Path, target_class: str, target_layer) -> np.ndarray:
     image = Image.open(image_path).convert("RGB")
     input_tensor = classifier.preprocess(image).unsqueeze(0).to(classifier.device)
+    input_tensor.requires_grad_(True)
     target_index = target_class_index(classifier, target_class)
 
     with torch.enable_grad():
@@ -152,39 +200,24 @@ def save_gradcam(classifier, image_path: Path, target_class: str, target_layer, 
         attributions = layer_gradcam.attribute(input_tensor, target=target_index)
         upsampled = LayerAttribution.interpolate(attributions, input_tensor.shape[2:])
 
-    attribution = upsampled.squeeze(0).detach().cpu().permute(1, 2, 0).numpy()
-    visual_image = tensor_to_visual_image(input_tensor)
-
-    figure, _ = viz.visualize_image_attr_multiple(
-        attribution,
-        visual_image,
-        methods=["original_image", "blended_heat_map", "masked_image"],
-        signs=["all", "positive", "positive"],
-        titles=["Original", "Grad-CAM", "Masked"],
-        show_colorbar=True,
-        use_pyplot=False,
-    )
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    figure.savefig(output_path, bbox_inches="tight", dpi=150)
-    plt.close(figure)
-    return classifier.predict(image_path=image_path, target_class=target_class, top_k=5)
+    heatmap = upsampled.squeeze().detach().cpu().numpy()
+    if heatmap.ndim == 3:
+        heatmap = heatmap.mean(axis=0)
+    heatmap = np.maximum(heatmap, 0.0).astype(np.float32)
+    return heatmap
 
 
-def save_occlusion(
+def compute_occlusion_heatmap(
     classifier,
     image_path: Path,
     target_class: str,
-    output_path: Path,
     patch_size: int,
     stride: int,
-) -> dict:
+) -> tuple[np.ndarray, dict]:
     image = Image.open(image_path).convert("RGB")
     input_tensor = classifier.preprocess(image).unsqueeze(0).to(classifier.device)
     target_index = target_class_index(classifier, target_class)
-
-    with torch.no_grad():
-        base_probabilities = torch.softmax(classifier.model(input_tensor), dim=1)[0]
-        base_confidence = float(base_probabilities[target_index].item())
+    base_confidence = compute_target_confidence(classifier, input_tensor, target_index)
 
     height, width = input_tensor.shape[2:]
     heatmap = np.zeros((height, width), dtype=np.float32)
@@ -196,105 +229,106 @@ def save_occlusion(
             x_end = min(x_start + patch_size, width)
             occluded = input_tensor.clone()
             occluded[:, :, y_start:y_end, x_start:x_end] = 0.0
-            with torch.no_grad():
-                probabilities = torch.softmax(classifier.model(occluded), dim=1)[0]
-                occluded_confidence = float(probabilities[target_index].item())
+            occluded_confidence = compute_target_confidence(classifier, occluded, target_index)
             drop = base_confidence - occluded_confidence
             heatmap[y_start:y_end, x_start:x_end] += drop
             counts[y_start:y_end, x_start:x_end] += 1.0
 
     heatmap = heatmap / np.maximum(counts, 1.0)
-    positive_heatmap = np.maximum(heatmap, 0.0)
+    positive_heatmap = np.maximum(heatmap, 0.0).astype(np.float32)
     max_drop = float(positive_heatmap.max())
-    mean_positive_drop = float(positive_heatmap[positive_heatmap > 0].mean()) if np.any(positive_heatmap > 0) else 0.0
-    normalized = positive_heatmap / max_drop if max_drop > 0 else positive_heatmap
-    visual_image = tensor_to_visual_image(input_tensor)
+    if np.any(positive_heatmap > 0):
+        mean_positive_drop = float(positive_heatmap[positive_heatmap > 0].mean())
+    else:
+        mean_positive_drop = 0.0
 
-    figure, axes = plt.subplots(1, 3, figsize=(9, 3))
-    axes[0].imshow(visual_image)
-    axes[0].set_title("Original")
-    axes[0].axis("off")
-    axes[1].imshow(visual_image)
-    axes[1].imshow(normalized, cmap="hot", alpha=0.45)
-    axes[1].set_title("Occlusion drop")
-    axes[1].axis("off")
-    heat = axes[2].imshow(normalized, cmap="hot")
-    axes[2].set_title("Drop map")
-    axes[2].axis("off")
-    figure.colorbar(heat, ax=axes.ravel().tolist(), shrink=0.7)
-    figure.suptitle(
-        f"{target_class}: base target confidence {base_confidence:.3f}, max drop {max_drop:.3f}",
-        fontsize=10,
-    )
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    figure.savefig(output_path, bbox_inches="tight", dpi=150)
-    plt.close(figure)
-
-    return {
-        "base_confidence": base_confidence,
-        "max_drop": max_drop,
-        "mean_positive_drop": mean_positive_drop,
+    return positive_heatmap, {
+        "base_target_confidence": base_confidence,
+        "max_occlusion_drop": max_drop,
+        "mean_positive_occlusion_drop": mean_positive_drop,
     }
 
 
-def find_gradcam_layer(model):
-    candidates = [
-        ("model.layer4[-1].conv2", lambda item: item.layer4[-1].conv2),
-        ("model.model.layer4[-1].conv2", lambda item: item.model.layer4[-1].conv2),
-        ("model.module.layer4[-1].conv2", lambda item: item.module.layer4[-1].conv2),
-        ("model.layer4[-1]", lambda item: item.layer4[-1]),
-        ("model.model.layer4[-1]", lambda item: item.model.layer4[-1]),
-        ("model.module.layer4[-1]", lambda item: item.module.layer4[-1]),
-    ]
-    for name, getter in candidates:
-        try:
-            return getter(model), name
-        except (AttributeError, IndexError, TypeError):
-            continue
-
-    last_conv_name = None
-    last_conv = None
-    for name, module in model.named_modules():
-        if isinstance(module, torch.nn.Conv2d):
-            last_conv_name = name
-            last_conv = module
-
-    if last_conv is None:
-        raise RuntimeError("Could not find a convolutional layer for Grad-CAM.")
-    return last_conv, last_conv_name
+def compute_target_confidence(classifier, input_tensor, target_index: int) -> float:
+    with torch.no_grad():
+        probabilities = torch.softmax(classifier.model(input_tensor), dim=1)[0]
+    return float(probabilities[target_index].item())
 
 
-def make_summary_figure(rows: list[dict], path_key: str, png_path: Path, pdf_path: Path) -> None:
-    if not rows:
-        return
-    figure, axes = plt.subplots(2, 2, figsize=(12, 8))
-    for axis, row in zip(axes.ravel(), rows):
-        path = Path(row[path_key])
-        image = Image.open(path).convert("RGB")
-        axis.imshow(image)
-        axis.axis("off")
-        axis.set_title(
-            f"{row['target_class']} ({row['case_type']})\n"
-            f"top-1: {row['top1_label']}, rank: {row['target_rank']}, "
-            f"conf: {float(row['target_confidence']):.3f}",
-            fontsize=9,
+def select_representative_row(results: pd.DataFrame, target_class: str):
+    rows = results[results["target_class"] == target_class].copy()
+    rows = rows.dropna(subset=["target_rank", "target_confidence"])
+    if rows.empty:
+        return None
+
+    amr_at_1 = float((rows["target_rank"] == 1).mean())
+    amr_at_5 = float((rows["target_rank"] <= 5).mean())
+    if amr_at_1 >= 0.30:
+        case_type = "success"
+        preferred = rows[rows["target_rank"] == 1]
+        selected = preferred.sort_values("target_confidence", ascending=False).iloc[0]
+    elif amr_at_5 >= 0.30:
+        case_type = "partial"
+        preferred = rows[(rows["target_rank"] > 1) & (rows["target_rank"] <= 5)]
+        if preferred.empty:
+            preferred = rows[rows["target_rank"] <= 5]
+        selected = preferred.sort_values(["target_rank", "target_confidence"], ascending=[True, False]).iloc[0]
+    else:
+        case_type = "failure"
+        preferred = rows[rows["target_rank"] > 5]
+        if preferred.empty:
+            preferred = rows
+        selected = preferred.sort_values("target_confidence", ascending=False).iloc[0]
+
+    return selected, case_type, amr_at_1, amr_at_5
+
+
+def summarize_occlusion_results(results: pd.DataFrame) -> pd.DataFrame:
+    summary_rows = []
+    for target_class, rows in results.groupby("target_class", sort=False):
+        summary_rows.append(
+            {
+                "target_class": target_class,
+                "n_images": int(len(rows)),
+                "amr_at_1": float((rows["target_rank"] == 1).mean()),
+                "amr_at_5": float((rows["target_rank"] <= 5).mean()),
+                "mean_target_confidence": float(rows["target_confidence"].mean()),
+                "median_target_confidence": float(rows["target_confidence"].median()),
+                "mean_max_occlusion_drop": float(rows["max_occlusion_drop"].mean()),
+                "median_max_occlusion_drop": float(rows["max_occlusion_drop"].median()),
+                "mean_relative_max_occlusion_drop": float(rows["relative_max_occlusion_drop"].mean()),
+                "median_relative_max_occlusion_drop": float(rows["relative_max_occlusion_drop"].median()),
+                "mean_positive_occlusion_drop": float(rows["mean_positive_occlusion_drop"].mean()),
+                "mean_relative_positive_occlusion_drop": float(
+                    rows["relative_mean_positive_occlusion_drop"].mean()
+                ),
+            }
         )
-    for axis in axes.ravel()[len(rows):]:
-        axis.axis("off")
-    figure.tight_layout()
-    figure.savefig(png_path, dpi=200)
-    figure.savefig(pdf_path)
-    plt.close(figure)
+    return pd.DataFrame(summary_rows, columns=OCCLUSION_SUMMARY_COLUMNS)
 
 
-def append_metadata(path: Path, row: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    file_exists = path.exists()
-    with path.open("a", newline="", encoding="utf-8") as file:
-        writer = csv.DictWriter(file, fieldnames=METADATA_COLUMNS)
-        if not file_exists:
-            writer.writeheader()
-        writer.writerow(row)
+def resolve_layer(model, layer_path: str):
+    current = model
+    parts = layer_path.split(".")
+    if parts and parts[0] == "model":
+        parts = parts[1:]
+
+    for part in parts:
+        match = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_]*)(?:\[(-?\d+)\])?", part)
+        if match is None:
+            raise RuntimeError(f"Unsupported Grad-CAM layer path syntax: {layer_path}")
+
+        attribute_name, index_text = match.groups()
+        if not hasattr(current, attribute_name):
+            raise RuntimeError(f"Configured Grad-CAM layer was not found: {layer_path}")
+        current = getattr(current, attribute_name)
+        if index_text is not None:
+            try:
+                current = current[int(index_text)]
+            except (IndexError, TypeError, KeyError) as error:
+                raise RuntimeError(f"Configured Grad-CAM layer was not found: {layer_path}") from error
+
+    return current
 
 
 def target_class_index(classifier, target_class: str) -> int:
@@ -303,15 +337,6 @@ def target_class_index(classifier, target_class: str) -> int:
         if target_index is not None:
             return int(target_index)
     return int(classifier.labels.index(target_class))
-
-
-def tensor_to_visual_image(input_tensor) -> np.ndarray:
-    image = input_tensor.squeeze(0).detach().cpu().permute(1, 2, 0).numpy()
-    image_min = float(image.min())
-    image_max = float(image.max())
-    if image_max > image_min:
-        image = (image - image_min) / (image_max - image_min)
-    return np.clip(image, 0.0, 1.0)
 
 
 def slugify(text: str) -> str:
@@ -324,6 +349,13 @@ def project_path(path: str | Path) -> Path:
     if path.is_absolute():
         return path
     return PROJECT_ROOT / path
+
+
+def project_relative_text(path: Path) -> str:
+    try:
+        return str(path.relative_to(PROJECT_ROOT))
+    except ValueError:
+        return str(path)
 
 
 if __name__ == "__main__":

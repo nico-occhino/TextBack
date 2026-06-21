@@ -1,9 +1,0 @@
-Optional future enhancement:
-
-A separate LLM critic could transform classifier logs into richer textual
-feedback before TextGrad builds the prompt update.  That critic could summarize
-which visual cues helped, which cues caused the wrong top-1 prediction, and
-which name-free attributes should be tried next.
-
-This project does not implement that separate critic now.  The active pipeline
-builds the TextGrad loss instruction directly from classifier feedback.

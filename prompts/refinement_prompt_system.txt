@@ -19,6 +19,7 @@ Refinement rules:
 - Avoid generic style filler such as high quality, masterpiece, realistic photography, cinematic composition, ultra detailed.
 - Do NOT use the exact target class name or close synonyms.
 - Do NOT mention classifier, logits, confidence, rank, ImageNet, target class, or activation in the returned prompt.
+- When the current prompt performs worse than previous successful prompts, prefer a conservative revision that preserves the previously successful visual structure.
 
 Return only one improved image-generation prompt.
 Maximum 45 words.

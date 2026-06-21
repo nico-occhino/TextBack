@@ -1,13 +1,9 @@
-"""RobustBench ImageNet classifier used by TextBack."""
-
 from pathlib import Path
 
 
 class RobustBenchImageNetClassifier:
-    """Robust ImageNet ResNet-50 loaded from RobustBench."""
 
     def __init__(self, model_name: str, dataset: str, threat_model: str, device: str) -> None:
-        """Load the robust classifier and ImageNet preprocessing."""
         try:
             import torch
             from PIL import Image
@@ -38,7 +34,6 @@ class RobustBenchImageNetClassifier:
             ) from error
 
     def predict(self, image_path: str | Path, target_class: str, top_k: int = 5) -> dict:
-        """Classify one image and return TextBack metrics."""
         image = self.Image.open(image_path).convert("RGB")
         input_tensor = self.preprocess(image).unsqueeze(0).to(self.device)
 
@@ -67,7 +62,6 @@ class RobustBenchImageNetClassifier:
         }
 
     def _target_metrics(self, probabilities, target_class: str) -> tuple[float, int | None]:
-        """Compute confidence and 1-based rank for the target class."""
         target_index = self.label_to_index.get(target_class)
         if target_index is None:
             return 0.0, None
@@ -79,7 +73,6 @@ class RobustBenchImageNetClassifier:
 
 
 def build_classifier(config: dict) -> RobustBenchImageNetClassifier:
-    """Build the final RobustBench classifier."""
     classifier_config = config["classifier"]
     provider = classifier_config.get("provider")
     if provider != "robustbench":

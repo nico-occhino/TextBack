@@ -69,7 +69,7 @@ def update_descriptor_memory(
     for descriptor in extract_descriptors_from_prompt(
         prompt,
         max_descriptor_words=max_descriptor_words,
-        target_class=target_class,
+        target_class=target_class, 
     ):
         descriptor_key = descriptor.lower()
         if descriptor_key in seen:
