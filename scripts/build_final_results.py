@@ -1,7 +1,6 @@
 import argparse
 import json
 import sys
-from collections import Counter, defaultdict
 from pathlib import Path
 
 import matplotlib
@@ -24,16 +23,10 @@ DEFAULT_XAI_DIR = "results/xai"
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description=(
-            "Build one clean TextBack results folder: tables, PNG figures, and a CLI summary. "
-            "This script consolidates inspect_results.py, make_report_assets.py, and saved XAI artifacts."
-        )
+        description="Build the final TextBack report tables, PNG figures, and CLI summary."
     )
     parser.add_argument("--config", default="configs/final.yaml")
     parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR)
-    parser.add_argument("--xai-dir", default=DEFAULT_XAI_DIR)
-    parser.add_argument("--top-confusions", type=int, default=5)
-    parser.add_argument("--quiet", action="store_true", help="Do not print the textual CLI summary.")
     return parser.parse_args()
 
 
@@ -44,14 +37,14 @@ def main() -> None:
 
     results_dir = project_path(config["paths"]["results_dir"])
     output_dir = project_path(args.output_dir)
-    xai_dir = project_path(args.xai_dir)
+    xai_dir = project_path(DEFAULT_XAI_DIR)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    bundle = load_result_bundle(config, results_dir, xai_dir)
+    bundle = load_result_bundle(results_dir, xai_dir)
 
     main_table = build_main_results_table(config, bundle)
     real_vs_generated = build_real_vs_generated_table(config, bundle)
-    confusion_table = build_confusion_table(config, bundle, args.top_confusions)
+    confusion_table = build_confusion_table(config, bundle, top_n=5)
     optimization_table = build_optimization_table(config, bundle)
     guardrail_table = build_guardrail_table(config, bundle)
     prompt_table = build_prompt_table(config, bundle)
@@ -69,12 +62,11 @@ def main() -> None:
     )
 
     create_optimization_trajectory_plot(config, bundle, output_dir)
-    create_real_vs_generated_plot(config, real_vs_generated, output_dir)
+    create_real_vs_generated_plot(real_vs_generated, output_dir)
     create_relative_occlusion_boxplot(config, bundle, output_dir)
     create_xai_selected_examples_figure(config, bundle, output_dir)
 
     report_text = build_text_summary(
-        config=config,
         output_dir=output_dir,
         main_table=main_table,
         real_vs_generated=real_vs_generated,
@@ -83,16 +75,14 @@ def main() -> None:
         guardrail_table=guardrail_table,
         prompt_table=prompt_table,
         xai_table=xai_table,
-        bundle=bundle,
     )
     (output_dir / "summary.txt").write_text(report_text, encoding="utf-8")
     (output_dir / "summary.md").write_text(report_text, encoding="utf-8")
 
-    if not args.quiet:
-        print(report_text)
+    print(report_text)
 
 
-def load_result_bundle(config: dict, results_dir: Path, xai_dir: Path) -> dict:
+def load_result_bundle(results_dir: Path, xai_dir: Path) -> dict:
     inference_results = read_required_csv(results_dir / "inference_results.csv")
     inference_results["target_rank"] = pd.to_numeric(inference_results["target_rank"], errors="coerce")
     inference_results["target_confidence"] = pd.to_numeric(inference_results["target_confidence"], errors="coerce")
@@ -105,8 +95,6 @@ def load_result_bundle(config: dict, results_dir: Path, xai_dir: Path) -> dict:
         optimization_logs["target_rank"] = pd.to_numeric(optimization_logs["target_rank"], errors="coerce")
 
     return {
-        "results_dir": results_dir,
-        "xai_dir": xai_dir,
         "final_prompts": read_json(results_dir / "final_prompts.json"),
         "initial_prompt_metadata": read_json(results_dir / "initial_prompt_metadata.json"),
         "best_prompt_metadata": read_json(results_dir / "best_prompt_metadata.json"),
@@ -140,19 +128,22 @@ def load_result_bundle(config: dict, results_dir: Path, xai_dir: Path) -> dict:
 def build_main_results_table(config: dict, bundle: dict) -> pd.DataFrame:
     inference_results = bundle["inference_results"]
     inference_summary = bundle.get("inference_summary") or {}
+    activation_rates = bundle.get("activation_rates") or {}
     rows = []
 
     for target_class in target_classes(config):
         class_rows = inference_results[inference_results["target_class"] == target_class]
         summary = inference_summary.get(target_class, {})
+        amr_at_1 = summary.get("top1_activation_rate", activation_rates.get(target_class))
         rows.append(
             {
                 "Class": target_class,
-                "AMR@1": metric_or_compute(summary, "top1_activation_rate", class_rows["target_rank"] == 1),
+                "AMR@1": (
+                    to_float(amr_at_1)
+                    if amr_at_1 is not None
+                    else float((class_rows["target_rank"] == 1).mean())
+                ),
                 "AMR@5": metric_or_compute(summary, "top5_activation_rate", class_rows["target_rank"] <= 5),
-                "Mean confidence": metric_or_compute(summary, "mean_target_confidence", class_rows["target_confidence"]),
-                "Median confidence": metric_or_compute(summary, "median_target_confidence", class_rows["target_confidence"].median()),
-                "Mean rank": metric_or_compute(summary, "mean_target_rank", class_rows["target_rank"]),
             }
         )
     return pd.DataFrame(rows)
@@ -172,10 +163,8 @@ def build_real_vs_generated_table(config: dict, bundle: dict) -> pd.DataFrame:
                 "Class": target_class,
                 "Generated AMR@1": row["AMR@1"],
                 "Real Top-1": real_top1,
-                "Delta Top-1": safe_delta(row["AMR@1"], real_top1),
                 "Generated AMR@5": row["AMR@5"],
                 "Real Top-5": real_top5,
-                "Delta Top-5": safe_delta(row["AMR@5"], real_top5),
             }
         )
     return pd.DataFrame(rows)
@@ -186,7 +175,10 @@ def build_confusion_table(config: dict, bundle: dict, top_n: int) -> pd.DataFram
     rows = []
     for target_class in target_classes(config):
         class_rows = inference_results[inference_results["target_class"] == target_class]
-        wrong_rows = class_rows[class_rows["target_rank"] != 1]
+        if "top1_correct" in class_rows.columns:
+            wrong_rows = class_rows[~class_rows["top1_correct"].astype(str).str.lower().eq("true")]
+        else:
+            wrong_rows = class_rows[class_rows["target_rank"] != 1]
         counts = wrong_rows["top1_label"].value_counts().head(top_n)
         rows.append(
             {
@@ -255,15 +247,25 @@ def build_guardrail_table(config: dict, bundle: dict) -> pd.DataFrame:
 
 def build_prompt_table(config: dict, bundle: dict) -> pd.DataFrame:
     final_prompts = bundle.get("final_prompts") or {}
+    initial_metadata = bundle.get("initial_prompt_metadata") or {}
     descriptor_memory = bundle.get("descriptor_memory") or {}
+    cue_synthesis = bundle.get("cue_synthesis") or {}
     rows = []
     for target_class in target_classes(config):
+        initial = initial_metadata.get(target_class, {})
         descriptors = descriptor_memory.get(target_class, [])
+        cues = cue_synthesis.get(target_class, {})
         rows.append(
             {
                 "Class": target_class,
+                "Initial prompt source": initial.get("source", ""),
+                "Initial prompt": initial.get("prompt", ""),
                 "Final prompt": final_prompts.get(target_class, ""),
                 "Positive descriptors": "; ".join(descriptors[:12]),
+                "Object/core cues": "; ".join(cues.get("object_or_core_cues", [])),
+                "Candidate contextual cues": "; ".join(
+                    cues.get("candidate_contextual_spurious_cues", [])
+                ),
             }
         )
     return pd.DataFrame(rows)
@@ -283,6 +285,7 @@ def build_xai_summary_table(config: dict, bundle: dict) -> pd.DataFrame:
         rows.append(
             {
                 "Class": target_class,
+                "N images": to_float(occ.get("n_images")),
                 "Case": selected_source.get("case_type"),
                 "Selected top-1": selected_source.get("top1_label"),
                 "Selected rank": to_float(selected_source.get("target_rank")),
@@ -290,6 +293,11 @@ def build_xai_summary_table(config: dict, bundle: dict) -> pd.DataFrame:
                 "Mean max occlusion drop": to_float(occ.get("mean_max_occlusion_drop")),
                 "Median max occlusion drop": to_float(occ.get("median_max_occlusion_drop")),
                 "Mean relative max drop": to_float(occ.get("mean_relative_max_occlusion_drop")),
+                "Median relative max drop": to_float(occ.get("median_relative_max_occlusion_drop")),
+                "Mean positive occlusion drop": to_float(occ.get("mean_positive_occlusion_drop")),
+                "Mean relative positive drop": to_float(
+                    occ.get("mean_relative_positive_occlusion_drop")
+                ),
             }
         )
     return pd.DataFrame(rows)
@@ -318,7 +326,7 @@ def write_tables(
         table.to_csv(output_dir / f"{name}.csv", index=False)
 
     write_latex_table(
-        main_table[["Class", "AMR@1", "AMR@5", "Mean confidence", "Mean rank"]],
+        main_table,
         output_dir / "main_results_table.tex",
         caption="Activation maximization performance over generated images.",
         label="tab:main-results",
@@ -339,9 +347,18 @@ def write_tables(
         float_format="%.3f",
     )
     write_latex_table(
-        xai_table,
+        xai_table[
+            [
+                "Class",
+                "N images",
+                "Mean max occlusion drop",
+                "Median max occlusion drop",
+                "Mean relative max drop",
+                "Median relative max drop",
+            ]
+        ],
         output_dir / "xai_occlusion_summary_table.tex",
-        caption="Selected XAI examples and aggregate occlusion sensitivity.",
+        caption="Aggregate occlusion sensitivity over generated inference images.",
         label="tab:xai-occlusion-summary",
         float_format="%.3f",
     )
@@ -370,7 +387,7 @@ def create_optimization_trajectory_plot(config: dict, bundle: dict, output_dir: 
     plt.close(figure)
 
 
-def create_real_vs_generated_plot(config: dict, table: pd.DataFrame, output_dir: Path) -> None:
+def create_real_vs_generated_plot(table: pd.DataFrame, output_dir: Path) -> None:
     if table.empty or table["Real Top-1"].isna().all():
         return
 
@@ -403,7 +420,9 @@ def create_relative_occlusion_boxplot(config: dict, bundle: dict, output_dir: Pa
     data = []
     labels = []
     for target_class in target_classes(config):
-        values = occlusion_results[occlusion_results["target_class"] == target_class]["relative_max_occlusion_drop"]
+        values = occlusion_results[occlusion_results["target_class"] == target_class][
+            "relative_max_occlusion_drop"
+        ]
         values = pd.to_numeric(values, errors="coerce").dropna()
         if values.empty:
             continue
@@ -455,7 +474,7 @@ def create_xai_selected_examples_figure(config: dict, bundle: dict, output_dir: 
             f"conf: {format_float(row.get('target_confidence'), digits=3)}"
         )
 
-        image_path = resolve_project_file(row.get("image_path"), bundle)
+        image_path = resolve_project_file(row.get("image_path"))
         image = load_image_or_none(image_path)
         if image is None:
             for axis in row_axes:
@@ -467,14 +486,14 @@ def create_xai_selected_examples_figure(config: dict, bundle: dict, output_dir: 
         row_axes[0].set_title("Original", fontsize=9)
         row_axes[0].axis("off")
 
-        gradcam_array = load_npy_from_row(row, "gradcam_npy_path", bundle)
-        occlusion_array = load_npy_from_row(row, "occlusion_npy_path", bundle)
+        gradcam_array = load_npy_from_row(row, "gradcam_npy_path")
+        occlusion_array = load_npy_from_row(row, "occlusion_npy_path")
 
         if gradcam_array is not None:
             row_axes[1].imshow(image)
             row_axes[1].imshow(resize_heatmap(gradcam_array, image.size), alpha=0.45)
         else:
-            gradcam_png = resolve_project_file(row.get("gradcam_path"), bundle)
+            gradcam_png = resolve_project_file(row.get("gradcam_path"))
             gradcam_image = load_image_or_none(gradcam_png)
             row_axes[1].imshow(gradcam_image if gradcam_image is not None else image)
         row_axes[1].set_title("Target Grad-CAM", fontsize=9)
@@ -484,7 +503,7 @@ def create_xai_selected_examples_figure(config: dict, bundle: dict, output_dir: 
             row_axes[2].imshow(image)
             row_axes[2].imshow(resize_heatmap(occlusion_array, image.size), alpha=0.45)
         else:
-            occ_png = resolve_project_file(row.get("occlusion_path"), bundle)
+            occ_png = resolve_project_file(row.get("occlusion_path"))
             occ_image = load_image_or_none(occ_png)
             row_axes[2].imshow(occ_image if occ_image is not None else image)
         row_axes[2].set_title("Occlusion drop", fontsize=9)
@@ -506,7 +525,6 @@ def create_xai_selected_examples_figure(config: dict, bundle: dict, output_dir: 
 
 
 def build_text_summary(
-    config: dict,
     output_dir: Path,
     main_table: pd.DataFrame,
     real_vs_generated: pd.DataFrame,
@@ -515,7 +533,6 @@ def build_text_summary(
     guardrail_table: pd.DataFrame,
     prompt_table: pd.DataFrame,
     xai_table: pd.DataFrame,
-    bundle: dict,
 ) -> str:
     lines = []
     lines.append("TextBack Final Results")
@@ -525,13 +542,9 @@ def build_text_summary(
 
     lines.append("1. Activation maximization")
     for row in main_table.to_dict("records"):
-        label = classify_case(row["AMR@1"], row["AMR@5"], row["Mean rank"])
         lines.append(
-            f"  {row['Class']}: {label}; "
-            f"AMR@1={format_float(row['AMR@1'])}, "
-            f"AMR@5={format_float(row['AMR@5'])}, "
-            f"mean_conf={format_float(row['Mean confidence'])}, "
-            f"mean_rank={format_float(row['Mean rank'], digits=2)}"
+            f"  {row['Class']}: AMR@1={format_float(row['AMR@1'])}, "
+            f"AMR@5={format_float(row['AMR@5'])}"
         )
     lines.append("")
 
@@ -547,13 +560,17 @@ def build_text_summary(
 
     lines.append("3. Best prompt selection and guardrails")
     guardrail_lookup = {row["Class"]: row for row in guardrail_table.to_dict("records")}
+    prompt_lookup = {row["Class"]: row for row in prompt_table.to_dict("records")}
     for row in optimization_table.to_dict("records"):
         guardrail = guardrail_lookup.get(row["Class"], {})
+        prompt = prompt_lookup.get(row["Class"], {})
         lines.append(
             f"  {row['Class']}: best_step={format_rank(row['Best iteration'])}, "
             f"best_conf={format_float(row['Best confidence'])}, "
             f"best_rank={format_rank(row['Best rank'])}, "
-            f"rejected={format_rank(guardrail.get('Rejected updates'))}/{format_rank(guardrail.get('Total updates'))}"
+            f"rejected={format_rank(guardrail.get('Rejected updates'))}/"
+            f"{format_rank(guardrail.get('Total updates'))}, "
+            f"initial_source={prompt.get('Initial prompt source', 'n/a')}"
         )
     lines.append("")
 
@@ -563,7 +580,11 @@ def build_text_summary(
     lines.append("")
 
     lines.append("5. XAI summary")
-    if xai_table.empty or xai_table["Selected top-1"].isna().all():
+    has_selected_examples = not xai_table.empty and not xai_table["Selected top-1"].isna().all()
+    has_occlusion_summary = (
+        not xai_table.empty and not xai_table["Mean max occlusion drop"].isna().all()
+    )
+    if not has_selected_examples and not has_occlusion_summary:
         lines.append("  XAI tables not found. Run the XAI computation before building final assets.")
     else:
         for row in xai_table.to_dict("records"):
@@ -578,7 +599,12 @@ def build_text_summary(
     lines.append("")
 
     lines.append("6. Files written")
-    for path in sorted(output_dir.glob("*")):
+    written_paths = list(output_dir.glob("*"))
+    for summary_name in ("summary.txt", "summary.md"):
+        summary_path = output_dir / summary_name
+        if summary_path not in written_paths:
+            written_paths.append(summary_path)
+    for path in sorted(written_paths):
         lines.append(f"  {path.relative_to(PROJECT_ROOT)}")
 
     lines.append("")
@@ -643,7 +669,7 @@ def normalize_path_string(value: str | None) -> str | None:
     return str(value).replace("\\", "/")
 
 
-def resolve_project_file(value: str | None, bundle: dict) -> Path | None:
+def resolve_project_file(value: str | None) -> Path | None:
     value = normalize_path_string(value)
     if not value:
         return None
@@ -659,8 +685,8 @@ def load_image_or_none(path: Path | None):
     return Image.open(path).convert("RGB")
 
 
-def load_npy_from_row(row: dict, key: str, bundle: dict):
-    path = resolve_project_file(row.get(key), bundle)
+def load_npy_from_row(row: dict, key: str):
+    path = resolve_project_file(row.get(key))
     if path is None or not path.exists():
         return None
     try:
@@ -705,14 +731,6 @@ def metric_or_compute(summary: dict, key: str, fallback):
     return to_float(fallback)
 
 
-def safe_delta(a, b):
-    a = to_float(a)
-    b = to_float(b)
-    if a is None or b is None:
-        return None
-    return a - b
-
-
 def to_float(value):
     if value is None or value == "" or pd.isna(value):
         return None
@@ -736,17 +754,6 @@ def format_rank(value) -> str:
     if value.is_integer():
         return str(int(value))
     return f"{value:.2f}"
-
-
-def classify_case(amr1, amr5, mean_rank) -> str:
-    amr1 = to_float(amr1) or 0.0
-    amr5 = to_float(amr5) or 0.0
-    mean_rank = to_float(mean_rank) or 999.0
-    if amr1 >= 0.30 and amr5 >= 0.60:
-        return "success"
-    if amr5 >= 0.30 or mean_rank <= 20:
-        return "partial"
-    return "failure"
 
 
 def latex_escape(value) -> str:
