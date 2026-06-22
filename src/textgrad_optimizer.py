@@ -5,18 +5,18 @@ TextGrad API with a LiteLLM backward engine configured from YAML.
 """
 
 import os
-from pathlib import Path
+import re
 import time
+from pathlib import Path
 
 
 FORBIDDEN_TERMS = {
     "tabby": ["tabby", "cat", "kitten", "feline"],
-    "sports car": ["sports car","car", "vehicle", "automobile"],
+    "sports car": ["sports car", "car", "vehicle", "automobile"],
     "cowboy hat": ["cowboy hat"],
     "volcano": ["volcano"],
-    "book jacket": ["book jacket", "book"],
+    "book jacket": ["book jacket", "dust jacket", "jacket cover"],
 }
-# but the string are forbidden even if there is just  a part of the word, for example "cat" is forbidden for "tabby" so "caterpillar" is also forbidden
 
 def clean_prompt(prompt: str, max_prompt_words: int = 60) -> str:
     words = prompt.strip().replace("\n", " ").split()
@@ -26,11 +26,19 @@ def clean_prompt(prompt: str, max_prompt_words: int = 60) -> str:
 
 def contains_forbidden_terms(prompt: str, target_class: str) -> list[str]:
     prompt_lower = prompt.lower()
-    return [
-        term
-        for term in FORBIDDEN_TERMS.get(target_class, [])
-        if term.lower() in prompt_lower
-    ]
+    found = []
+
+    for term in FORBIDDEN_TERMS.get(target_class, []):
+        term_lower = term.lower()
+        if " " in term_lower:
+            pattern = r"\b" + re.escape(term_lower).replace(r"\ ", r"\s+") + r"\b"
+        else:
+            pattern = r"\b" + re.escape(term_lower) + r"\b"
+
+        if re.search(pattern, prompt_lower):
+            found.append(term)
+
+    return found
 
 
 class TextGradPromptOptimizer:
@@ -93,7 +101,7 @@ class TextGradPromptOptimizer:
             from litellm import completion
         except ImportError as error:
             raise RuntimeError(
-                "litellm is required for LLM initial prompt generation."  # really need except? error come out anyway?
+                "litellm is required for LLM initial prompt generation."
             ) from error
 
         max_retries = max(1, self.initial_prompt_max_retries)
@@ -102,7 +110,7 @@ class TextGradPromptOptimizer:
         last_forbidden_terms = []
         last_error = ""
 
-        for attempt in range(1, max_retries + 1):    # here from 0 to max_retries is not good?
+        for attempt in range(1, max_retries + 1):
             user_message = (
                 f"Target class: {target_class}\n"
                 f"Forbidden terms: {forbidden_terms_config}\n"
@@ -176,15 +184,19 @@ class TextGradPromptOptimizer:
 
         descriptor_section = ""
         if positive_descriptors:
-            visible_descriptors = positive_descriptors[:5]
+            visible_descriptors = positive_descriptors[-5:]
             descriptor_lines = "\n".join(
                 f"- {descriptor}" for descriptor in visible_descriptors
             )
             descriptor_section = (
-                "\n\nPositive descriptors to preserve:\n"
+                "\n\nRecent positive descriptors from prompts that activated the target class:\n"
                 f"{descriptor_lines}\n"
-                "Preserve these if useful and allowed."
+                "Use these as semantic anchors. Keep useful allowed descriptors and refine "
+                "them with more discriminative visual detail. Do not replace all of them "
+                "with an unrelated scene unless classifier feedback is clearly poor."
             )
+
+        forbidden_terms = ", ".join(FORBIDDEN_TERMS.get(target_class, []))
 
         return (
             self.refinement_prompt_system
@@ -197,8 +209,9 @@ class TextGradPromptOptimizer:
             "Top-k predictions:\n"
             + "\n".join(topk_lines)
             + descriptor_section
-            + "\nConstraint reminder: The improved image-generation prompt must not "
-            "contain the exact target class name or close synonyms.\n"
+            + f"\n\nForbidden terms for this target: {forbidden_terms}\n"
+            "The improved image-generation prompt must not contain any forbidden term or "
+            "close lexical variant that leaks the target label.\n"
             f"Maximum word reminder: return at most {self.max_prompt_words} words."
         )
 
@@ -339,7 +352,7 @@ class TextGradPromptOptimizer:
         has_key = bool(os.getenv("OPENAI_API_KEY"))
         print(f"OPENAI_API_KEY found: {has_key}")
         if not has_key:
-            raise RuntimeError("OPENAI_API_KEY is required for OpenAI TextGrad backend.")   # i could simply remove this 
+            raise RuntimeError("OPENAI_API_KEY is required for OpenAI TextGrad backend.")
 
     def _normalize_backend_name(self, backend: str) -> str:
         backend = backend.strip().lower()

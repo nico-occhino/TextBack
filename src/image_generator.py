@@ -11,10 +11,10 @@ class LocalDiffusersGenerator:
         self.generator_config = config["image_generator"]
 
         requested_device = config["project"].get("device", "cpu")
-        self.device = "cuda" if requested_device == "cuda" and torch.cuda.is_available() else "cpu"   
+        self.device = "cuda" if requested_device == "cuda" and torch.cuda.is_available() else "cpu"
         dtype = self._select_dtype(torch)
         model_name = self.generator_config["model_name"]
-        disable_safety_checker = bool(self.generator_config.get("disable_safety_checker", False))  # da eliminare?
+        disable_safety_checker = bool(self.generator_config.get("disable_safety_checker", False))
 
         load_kwargs = {"torch_dtype": dtype}
         if disable_safety_checker:
