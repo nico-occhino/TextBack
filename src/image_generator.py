@@ -11,10 +11,10 @@ class LocalDiffusersGenerator:
         self.generator_config = config["image_generator"]
 
         requested_device = config["project"].get("device", "cpu")
-        self.device = "cuda" if requested_device == "cuda" and torch.cuda.is_available() else "cpu"
+        self.device = "cuda" if requested_device == "cuda" and torch.cuda.is_available() else "cpu"   
         dtype = self._select_dtype(torch)
         model_name = self.generator_config["model_name"]
-        disable_safety_checker = bool(self.generator_config.get("disable_safety_checker", False))
+        disable_safety_checker = bool(self.generator_config.get("disable_safety_checker", False))  # da eliminare?
 
         load_kwargs = {"torch_dtype": dtype}
         if disable_safety_checker:
@@ -39,7 +39,6 @@ class LocalDiffusersGenerator:
             self.pipe.to(self.device)
 
     def generate(self, prompt: str, output_path: str | Path, seed: int | None = None) -> Path:
-        """Generate one image from a prompt and save it."""
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         generator = None

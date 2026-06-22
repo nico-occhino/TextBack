@@ -5,56 +5,43 @@ TextGrad API with a LiteLLM backward engine configured from YAML.
 """
 
 import os
-import re
-import time
 from pathlib import Path
+import time
 
 
 FORBIDDEN_TERMS = {
     "tabby": ["tabby", "cat", "kitten", "feline"],
-    "sports car": ["sports car", "sport car", "car", "vehicle", "automobile"],
+    "sports car": ["sports car","car", "vehicle", "automobile"],
     "cowboy hat": ["cowboy hat"],
     "volcano": ["volcano"],
-    "book jacket": ["book jacket", "dust jacket", "jacket cover"],
+    "book jacket": ["book jacket", "book"],
 }
-
+# but the string are forbidden even if there is just  a part of the word, for example "cat" is forbidden for "tabby" so "caterpillar" is also forbidden
 
 def clean_prompt(prompt: str, max_prompt_words: int = 60) -> str:
-    """Normalize and cap an image-generation prompt."""
     words = prompt.strip().replace("\n", " ").split()
     cleaned = " ".join(words[:max_prompt_words])
     return cleaned.rstrip(" ,;")
 
 
 def contains_forbidden_terms(prompt: str, target_class: str) -> list[str]:
-    """Find target-leaking terms in a candidate prompt."""
     prompt_lower = prompt.lower()
-    found = []
-
-    for term in FORBIDDEN_TERMS.get(target_class, []):
-        term_lower = term.lower()
-        if " " in term_lower:
-            pattern = r"\b" + re.escape(term_lower).replace(r"\ ", r"\s+") + r"\b"
-        else:
-            pattern = r"\b" + re.escape(term_lower) + r"\b"
-
-        if re.search(pattern, prompt_lower):
-            found.append(term)
-
-    return found
+    return [
+        term
+        for term in FORBIDDEN_TERMS.get(target_class, [])
+        if term.lower() in prompt_lower
+    ]
 
 
 class TextGradPromptOptimizer:
-    """Optimize image prompts with TextGrad textual gradients."""
 
     def __init__(self, config: dict) -> None:
-        """Configure TextGrad and store optimizer settings."""
         self._load_env_file()
         self.backward_engine = config["textgrad"]["backward_engine"]
         self.cache = bool(config["textgrad"].get("cache", True))
         self.sleep_seconds_after_step = int(config["textgrad"].get("sleep_seconds_after_step", 20))
         self.max_retries_on_rate_limit = int(config["textgrad"].get("max_retries_on_rate_limit", 3))
-        self.max_prompt_words = int(config["textgrad"].get("max_prompt_words", 60))
+        self.max_prompt_words = int(config["textgrad"].get("max_prompt_words", 45))
         self.initial_prompt_temperature = float(
             config["textgrad"].get("initial_prompt_temperature", 0.2)
         )
@@ -75,7 +62,7 @@ class TextGradPromptOptimizer:
 
         self._set_backward_engine()
         self.loss_instruction_variable = self.tg.Variable(
-            "Initial TextBack loss instruction.",
+            "Initial TextBack loss instruction",
             requires_grad=False,
             role_description=(
                 "non-trainable textual loss instruction that tells TextGrad how to "
@@ -86,7 +73,6 @@ class TextGradPromptOptimizer:
         self.loss_fn = self.tg.TextLoss(self.loss_instruction_variable)
 
     def make_prompt_variable(self, initial_prompt: str, target_class: str):
-        """Create the trainable TextGrad prompt variable."""
         return self.tg.Variable(
             initial_prompt,
             requires_grad=True,
@@ -97,20 +83,17 @@ class TextGradPromptOptimizer:
         )
 
     def make_optimizer(self, prompt_variable):
-        """Create one persistent TGD optimizer for a prompt variable."""
         return self.tg.TGD(parameters=[prompt_variable])
 
     def clean_final_prompt(self, prompt: str) -> str:
-        """Clean and cap a prompt before saving it."""
         return clean_prompt(prompt, self.max_prompt_words)
 
     def generate_initial_prompt(self, target_class: str) -> dict:
-        """Generate one name-free initial prompt with the configured LLM."""
         try:
             from litellm import completion
         except ImportError as error:
             raise RuntimeError(
-                "litellm is required for LLM initial prompt generation."
+                "litellm is required for LLM initial prompt generation."  # really need except? error come out anyway?
             ) from error
 
         max_retries = max(1, self.initial_prompt_max_retries)
@@ -119,7 +102,7 @@ class TextGradPromptOptimizer:
         last_forbidden_terms = []
         last_error = ""
 
-        for attempt in range(1, max_retries + 1):
+        for attempt in range(1, max_retries + 1):    # here from 0 to max_retries is not good?
             user_message = (
                 f"Target class: {target_class}\n"
                 f"Forbidden terms: {forbidden_terms_config}\n"
@@ -184,7 +167,6 @@ class TextGradPromptOptimizer:
         classifier_result: dict,
         positive_descriptors: list[str] | None = None,
     ) -> str:
-        """Build a natural-language loss from classifier feedback."""
         topk_lines = []
         for prediction in classifier_result["topk"]:
             topk_lines.append(
@@ -194,19 +176,15 @@ class TextGradPromptOptimizer:
 
         descriptor_section = ""
         if positive_descriptors:
-            visible_descriptors = positive_descriptors[-5:]
+            visible_descriptors = positive_descriptors[:5]
             descriptor_lines = "\n".join(
                 f"- {descriptor}" for descriptor in visible_descriptors
             )
             descriptor_section = (
-                "\n\nRecent positive descriptors from prompts that activated the target class:\n"
+                "\n\nPositive descriptors to preserve:\n"
                 f"{descriptor_lines}\n"
-                "Use these as semantic anchors. Keep useful allowed descriptors and refine "
-                "them with more discriminative visual detail. Do not replace all of them "
-                "with an unrelated scene unless classifier feedback is clearly poor."
+                "Preserve these if useful and allowed."
             )
-
-        forbidden_terms = ", ".join(FORBIDDEN_TERMS.get(target_class, []))
 
         return (
             self.refinement_prompt_system
@@ -219,9 +197,8 @@ class TextGradPromptOptimizer:
             "Top-k predictions:\n"
             + "\n".join(topk_lines)
             + descriptor_section
-            + f"\n\nForbidden terms for this target: {forbidden_terms}\n"
-            "The improved image-generation prompt must not contain any forbidden term or "
-            "close lexical variant that leaks the target label.\n"
+            + "\nConstraint reminder: The improved image-generation prompt must not "
+            "contain the exact target class name or close synonyms.\n"
             f"Maximum word reminder: return at most {self.max_prompt_words} words."
         )
 
@@ -233,7 +210,6 @@ class TextGradPromptOptimizer:
         classifier_result: dict,
         positive_descriptors: list[str] | None = None,
     ) -> dict:
-        """Run one TextGrad optimization step."""
         loss_instruction = self.build_loss_instruction(
             target_class,
             classifier_result,
@@ -280,7 +256,6 @@ class TextGradPromptOptimizer:
         }
 
     def _run_textgrad_update_with_retries(self, loss_fn, prompt_variable, optimizer):
-        """Run loss/backward/step with simple rate-limit retries."""
         max_attempts = self.max_retries_on_rate_limit + 1
 
         for attempt in range(1, max_attempts + 1):
@@ -312,7 +287,6 @@ class TextGradPromptOptimizer:
                 raise
 
     def _is_rate_limit_error(self, error: Exception) -> bool:
-        """Return True when an exception looks like a provider rate limit."""
         error_type = type(error).__name__.lower()
         message = str(error).lower()
         rate_limit_markers = [
@@ -328,13 +302,11 @@ class TextGradPromptOptimizer:
         )
 
     def _print_textgrad_failure(self, error: Exception) -> None:
-        """Print concise TextGrad/LiteLLM failure details without secrets."""
         message = str(error).replace("\n", " ")[:500]
         print(f"TextGrad/LiteLLM failure type: {type(error).__name__}")
         print(f"TextGrad/LiteLLM failure message: {message}")
 
     def _is_textgrad_format_error(self, error: Exception) -> bool:
-        """Return True when TextGrad cannot parse an optimizer response."""
         if isinstance(error, IndexError):
             return True
         message = str(error).lower()
@@ -346,14 +318,13 @@ class TextGradPromptOptimizer:
         return any(marker in message for marker in format_error_markers)
 
     def _set_backward_engine(self) -> None:
-        """Set TextGrad's global backward engine with a small compatibility shim."""
+        engine_name = self._litellm_model_name()
         try:
-            self.tg.set_backward_engine(self.backward_engine, override=True, cache=self.cache)
+            self.tg.set_backward_engine(engine_name, override=True, cache=self.cache)
         except TypeError:
-            self.tg.set_backward_engine(self.backward_engine, override=True)
+            self.tg.set_backward_engine(engine_name, override=True)
 
     def _check_api_key(self) -> None:
-        """Check the API key expected by the selected TextGrad backend."""
         normalized_backend = self._normalize_backend_name(self.backward_engine)
         provider = self._backend_provider(normalized_backend)
 
@@ -362,16 +333,15 @@ class TextGradPromptOptimizer:
 
         if provider != "openai":
             raise RuntimeError(
-                "Only OpenAI TextGrad backends are supported in this student version."
+                "Only OpenAI TextGrad backends are supported in this version."
             )
 
         has_key = bool(os.getenv("OPENAI_API_KEY"))
         print(f"OPENAI_API_KEY found: {has_key}")
         if not has_key:
-            raise RuntimeError("OPENAI_API_KEY is required for OpenAI TextGrad backend.")
+            raise RuntimeError("OPENAI_API_KEY is required for OpenAI TextGrad backend.")   # i could simply remove this 
 
     def _normalize_backend_name(self, backend: str) -> str:
-        """Normalize TextGrad backend names for provider checks."""
         backend = backend.strip().lower()
         if backend.startswith("experimental:"):
             backend = backend.replace("experimental:", "", 1)
@@ -382,13 +352,11 @@ class TextGradPromptOptimizer:
         return backend
 
     def _backend_provider(self, normalized_backend: str) -> str | None:
-        """Return the provider encoded by a normalized backend string."""
         if "openai" in normalized_backend:
             return "openai"
         return None
 
     def _load_env_file(self) -> None:
-        """Load .env with python-dotenv when the package is installed."""
         try:
             from dotenv import load_dotenv
 
@@ -397,7 +365,6 @@ class TextGradPromptOptimizer:
             pass
 
     def _load_prompt_file(self, file_name: str) -> str:
-        """Read one prompt file from the configured prompts directory."""
         path = self.prompts_dir / file_name
         if not path.exists():
             display_path = (self.prompts_dir / file_name).as_posix()
@@ -406,11 +373,9 @@ class TextGradPromptOptimizer:
         return path.read_text(encoding="utf-8").strip()
 
     def _litellm_model_name(self) -> str:
-        """Return the LiteLLM model name for the configured TextGrad backend."""
         return self._normalize_backend_name(self.backward_engine)
 
     def _completion_text(self, response) -> str:
-        """Extract assistant text from a LiteLLM completion response."""
         try:
             return str(response["choices"][0]["message"]["content"])
         except (KeyError, IndexError, TypeError):
@@ -422,7 +387,6 @@ class TextGradPromptOptimizer:
             raise RuntimeError("Could not read text from LiteLLM response.") from error
 
     def _value_of(self, variable) -> str:
-        """Read the text value from a TextGrad object across versions."""
         if hasattr(variable, "value"):
             return str(variable.value)
         if hasattr(variable, "get_value"):
@@ -430,7 +394,6 @@ class TextGradPromptOptimizer:
         return str(variable)
 
     def _set_value(self, variable, value: str) -> None:
-        """Write a cleaned value back to a TextGrad variable."""
         if hasattr(variable, "set_value"):
             variable.set_value(value)
         else:
