@@ -64,20 +64,19 @@ def update_descriptor_memory(
     max_descriptor_words = int(memory_config.get("max_descriptor_words", 6))
     max_descriptors = int(memory_config.get("max_descriptors_per_class", 12))
     current_descriptors = memory.setdefault(target_class, [])
-    seen = {descriptor.lower() for descriptor in current_descriptors}
 
     for descriptor in extract_descriptors_from_prompt(
         prompt,
         max_descriptor_words=max_descriptor_words,
-        target_class=target_class, 
+        target_class=target_class,
     ):
         descriptor_key = descriptor.lower()
-        if descriptor_key in seen:
-            continue
+        current_descriptors = [
+            existing
+            for existing in current_descriptors
+            if existing.lower() != descriptor_key
+        ]
         current_descriptors.append(descriptor)
-        seen.add(descriptor_key)
-        if len(current_descriptors) >= max_descriptors:
-            break
 
-    memory[target_class] = current_descriptors[:max_descriptors]
+    memory[target_class] = current_descriptors[-max_descriptors:]
     return memory
