@@ -48,7 +48,7 @@ def main() -> None:
     optimization_table = build_optimization_table(config, bundle)
     guardrail_table = build_guardrail_table(config, bundle)
     prompt_table = build_prompt_table(config, bundle)
-    xai_table = build_xai_summary_table(config, bundle)
+    gradcam_table = build_gradcam_selected_examples_table(config, bundle)
 
     write_tables(
         output_dir=output_dir,
@@ -58,13 +58,12 @@ def main() -> None:
         optimization_table=optimization_table,
         guardrail_table=guardrail_table,
         prompt_table=prompt_table,
-        xai_table=xai_table,
+        gradcam_table=gradcam_table,
     )
 
     create_optimization_trajectory_plot(config, bundle, output_dir)
     create_real_vs_generated_plot(real_vs_generated, output_dir)
-    create_relative_occlusion_boxplot(config, bundle, output_dir)
-    create_xai_selected_examples_figure(config, bundle, output_dir)
+    create_gradcam_presentation_figure(config, bundle, output_dir)
 
     report_text = build_text_summary(
         output_dir=output_dir,
@@ -74,7 +73,7 @@ def main() -> None:
         optimization_table=optimization_table,
         guardrail_table=guardrail_table,
         prompt_table=prompt_table,
-        xai_table=xai_table,
+        gradcam_table=gradcam_table,
     )
     (output_dir / "summary.txt").write_text(report_text, encoding="utf-8")
     (output_dir / "summary.md").write_text(report_text, encoding="utf-8")
@@ -105,23 +104,7 @@ def load_result_bundle(results_dir: Path, xai_dir: Path) -> dict:
         "optimization_logs": optimization_logs,
         "descriptor_memory": read_json(results_dir / "descriptor_memory.json"),
         "cue_synthesis": read_json(results_dir / "cue_synthesis.json"),
-        "occlusion_summary": read_optional_csv(first_existing([
-            xai_dir / "occlusion_summary.csv",
-            results_dir / "occlusion_summary.csv",
-        ])),
-        "occlusion_results": read_optional_csv(first_existing([
-            xai_dir / "occlusion_results.csv",
-            results_dir / "occlusion_results.csv",
-        ])),
-        "xai_selected_examples": read_optional_csv(first_existing([
-            xai_dir / "xai_selected_examples.csv",
-            xai_dir / "selected_examples.csv",
-            results_dir / "xai_selected_examples.csv",
-        ])),
-        "xai_metadata": read_optional_csv(first_existing([
-            xai_dir / "xai_metadata.csv",
-            results_dir / "xai_metadata.csv",
-        ])),
+        "xai_selected_examples": read_optional_csv(xai_dir / "xai_selected_examples.csv"),
     }
 
 
@@ -271,33 +254,22 @@ def build_prompt_table(config: dict, bundle: dict) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def build_xai_summary_table(config: dict, bundle: dict) -> pd.DataFrame:
-    occlusion_summary = bundle.get("occlusion_summary")
+def build_gradcam_selected_examples_table(config: dict, bundle: dict) -> pd.DataFrame:
     selected = bundle.get("xai_selected_examples")
-    metadata = bundle.get("xai_metadata")
     rows = []
 
     for target_class in target_classes(config):
-        occ = lookup_row(occlusion_summary, "target_class", target_class)
-        selected_row = lookup_row(selected, "target_class", target_class)
-        metadata_row = lookup_row(metadata, "target_class", target_class)
-        selected_source = selected_row or metadata_row or {}
+        row = lookup_row(selected, "target_class", target_class)
         rows.append(
             {
                 "Class": target_class,
-                "N images": to_float(occ.get("n_images")),
-                "Case": selected_source.get("case_type"),
-                "Selected top-1": selected_source.get("top1_label"),
-                "Selected rank": to_float(selected_source.get("target_rank")),
-                "Selected confidence": to_float(selected_source.get("target_confidence")),
-                "Mean max occlusion drop": to_float(occ.get("mean_max_occlusion_drop")),
-                "Median max occlusion drop": to_float(occ.get("median_max_occlusion_drop")),
-                "Mean relative max drop": to_float(occ.get("mean_relative_max_occlusion_drop")),
-                "Median relative max drop": to_float(occ.get("median_relative_max_occlusion_drop")),
-                "Mean positive occlusion drop": to_float(occ.get("mean_positive_occlusion_drop")),
-                "Mean relative positive drop": to_float(
-                    occ.get("mean_relative_positive_occlusion_drop")
-                ),
+                "Case": row.get("case_type"),
+                "Selected top-1": row.get("top1_label"),
+                "Selected rank": to_float(row.get("target_rank")),
+                "Selected confidence": to_float(row.get("target_confidence")),
+                "AMR@1": to_float(row.get("amr_at_1")),
+                "AMR@5": to_float(row.get("amr_at_5")),
+                "Grad-CAM path": row.get("gradcam_npy_path"),
             }
         )
     return pd.DataFrame(rows)
@@ -311,7 +283,7 @@ def write_tables(
     optimization_table: pd.DataFrame,
     guardrail_table: pd.DataFrame,
     prompt_table: pd.DataFrame,
-    xai_table: pd.DataFrame,
+    gradcam_table: pd.DataFrame,
 ) -> None:
     tables = {
         "main_results_table": main_table,
@@ -320,7 +292,7 @@ def write_tables(
         "optimization_best_steps_table": optimization_table,
         "guardrail_rejections_table": guardrail_table,
         "final_prompts_table": prompt_table,
-        "xai_occlusion_summary_table": xai_table,
+        "gradcam_selected_examples_table": gradcam_table,
     }
     for name, table in tables.items():
         table.to_csv(output_dir / f"{name}.csv", index=False)
@@ -347,19 +319,10 @@ def write_tables(
         float_format="%.3f",
     )
     write_latex_table(
-        xai_table[
-            [
-                "Class",
-                "N images",
-                "Mean max occlusion drop",
-                "Median max occlusion drop",
-                "Mean relative max drop",
-                "Median relative max drop",
-            ]
-        ],
-        output_dir / "xai_occlusion_summary_table.tex",
-        caption="Aggregate occlusion sensitivity over generated inference images.",
-        label="tab:xai-occlusion-summary",
+        gradcam_table,
+        output_dir / "gradcam_selected_examples_table.tex",
+        caption="Selected target-class Grad-CAM examples.",
+        label="tab:gradcam-selected-examples",
         float_format="%.3f",
     )
 
@@ -410,49 +373,14 @@ def create_real_vs_generated_plot(table: pd.DataFrame, output_dir: Path) -> None
     plt.close(figure)
 
 
-def create_relative_occlusion_boxplot(config: dict, bundle: dict, output_dir: Path) -> None:
-    occlusion_results = bundle.get("occlusion_results")
-    if occlusion_results is None or occlusion_results.empty:
-        return
-    if "relative_max_occlusion_drop" not in occlusion_results.columns:
-        return
-
-    data = []
-    labels = []
-    for target_class in target_classes(config):
-        values = occlusion_results[occlusion_results["target_class"] == target_class][
-            "relative_max_occlusion_drop"
-        ]
-        values = pd.to_numeric(values, errors="coerce").dropna()
-        if values.empty:
-            continue
-        data.append(values.to_numpy())
-        labels.append(target_class)
-
-    if not data:
-        return
-
-    figure, axis = plt.subplots(figsize=(8.5, 4.8))
-    axis.boxplot(data, labels=labels)
-    axis.set_ylabel("Relative max occlusion drop")
-    axis.set_title("Occlusion sensitivity by target class")
-    axis.tick_params(axis="x", rotation=25)
-    axis.grid(True, axis="y", alpha=0.3)
-    figure.tight_layout()
-    figure.savefig(output_dir / "xai_relative_occlusion_boxplot.png", dpi=220)
-    plt.close(figure)
-
-
-def create_xai_selected_examples_figure(config: dict, bundle: dict, output_dir: Path) -> None:
+def create_gradcam_presentation_figure(config: dict, bundle: dict, output_dir: Path) -> None:
     selected = bundle.get("xai_selected_examples")
-    metadata = bundle.get("xai_metadata")
-    source = selected if selected is not None and not selected.empty else metadata
-    if source is None or source.empty:
+    if selected is None or selected.empty:
         return
 
     rows = []
     for target_class in target_classes(config):
-        row = lookup_row(source, "target_class", target_class)
+        row = lookup_row(selected, "target_class", target_class)
         if row:
             rows.append(row)
 
@@ -460,68 +388,44 @@ def create_xai_selected_examples_figure(config: dict, bundle: dict, output_dir: 
         return
 
     n_rows = len(rows)
-    figure, axes = plt.subplots(n_rows, 3, figsize=(9, 2.7 * n_rows))
+    figure, axes = plt.subplots(n_rows, 2, figsize=(7.0, 2.2 * n_rows))
     if n_rows == 1:
         axes = np.array([axes])
 
     for row_axes, row in zip(axes, rows):
-        target_class = row.get("target_class", "")
-        case_type = row.get("case_type", "")
-        title = (
-            f"{target_class} ({case_type})\n"
-            f"top-1: {row.get('top1_label', '')}, "
-            f"rank: {format_rank(row.get('target_rank'))}, "
-            f"conf: {format_float(row.get('target_confidence'), digits=3)}"
-        )
-
         image_path = resolve_project_file(row.get("image_path"))
         image = load_image_or_none(image_path)
         if image is None:
             for axis in row_axes:
                 axis.axis("off")
-            row_axes[0].set_title(f"{target_class}: image missing")
+            row_axes[0].set_title(f"{row.get('target_class', '')}: image missing")
             continue
 
         row_axes[0].imshow(image)
         row_axes[0].set_title("Original", fontsize=9)
+        row_axes[0].set_ylabel(row_label(row), fontsize=8, rotation=0, labelpad=62, va="center")
         row_axes[0].axis("off")
 
-        gradcam_array = load_npy_from_row(row, "gradcam_npy_path")
-        occlusion_array = load_npy_from_row(row, "occlusion_npy_path")
-
-        if gradcam_array is not None:
-            row_axes[1].imshow(image)
-            row_axes[1].imshow(resize_heatmap(gradcam_array, image.size), alpha=0.45)
-        else:
-            gradcam_png = resolve_project_file(row.get("gradcam_path"))
-            gradcam_image = load_image_or_none(gradcam_png)
-            row_axes[1].imshow(gradcam_image if gradcam_image is not None else image)
+        heatmap_array = load_npy_from_row(row, "gradcam_npy_path")
+        row_axes[1].imshow(image)
+        if heatmap_array is not None:
+            row_axes[1].imshow(resize_heatmap(heatmap_array, image.size), cmap="jet", alpha=0.45)
         row_axes[1].set_title("Target Grad-CAM", fontsize=9)
         row_axes[1].axis("off")
 
-        if occlusion_array is not None:
-            row_axes[2].imshow(image)
-            row_axes[2].imshow(resize_heatmap(occlusion_array, image.size), alpha=0.45)
-        else:
-            occ_png = resolve_project_file(row.get("occlusion_path"))
-            occ_image = load_image_or_none(occ_png)
-            row_axes[2].imshow(occ_image if occ_image is not None else image)
-        row_axes[2].set_title("Occlusion drop", fontsize=9)
-        row_axes[2].axis("off")
-
-        row_axes[1].text(
-            0.5,
-            -0.18,
-            title,
-            transform=row_axes[1].transAxes,
-            ha="center",
-            va="top",
-            fontsize=8,
-        )
-
-    figure.tight_layout()
-    figure.savefig(output_dir / "xai_selected_examples.png", dpi=220, bbox_inches="tight")
+    figure.tight_layout(pad=0.5)
+    figure.savefig(output_dir / "gradcam_presentation_grid.png", dpi=240, bbox_inches="tight")
     plt.close(figure)
+
+
+def row_label(row: dict) -> str:
+    return (
+        f"{row.get('target_class', '')}\n"
+        f"{row.get('case_type', '')}\n"
+        f"top-1: {row.get('top1_label', '')}\n"
+        f"rank: {format_rank(row.get('target_rank'))}\n"
+        f"conf: {format_float(row.get('target_confidence'), digits=3)}"
+    )
 
 
 def build_text_summary(
@@ -532,7 +436,7 @@ def build_text_summary(
     optimization_table: pd.DataFrame,
     guardrail_table: pd.DataFrame,
     prompt_table: pd.DataFrame,
-    xai_table: pd.DataFrame,
+    gradcam_table: pd.DataFrame,
 ) -> str:
     lines = []
     lines.append("TextBack Final Results")
@@ -579,37 +483,59 @@ def build_text_summary(
         lines.append(f"  {row['Class']}: {row['Most frequent wrong top-1 predictions']}")
     lines.append("")
 
-    lines.append("5. XAI summary")
-    has_selected_examples = not xai_table.empty and not xai_table["Selected top-1"].isna().all()
-    has_occlusion_summary = (
-        not xai_table.empty and not xai_table["Mean max occlusion drop"].isna().all()
-    )
-    if not has_selected_examples and not has_occlusion_summary:
-        lines.append("  XAI tables not found. Run the XAI computation before building final assets.")
+    lines.append("5. Grad-CAM summary")
+    if gradcam_table.empty or gradcam_table["Selected top-1"].isna().all():
+        lines.append("  Grad-CAM selected examples not found. Run the XAI computation before building final assets.")
     else:
-        for row in xai_table.to_dict("records"):
+        for row in gradcam_table.to_dict("records"):
             lines.append(
                 f"  {row['Class']}: case={row.get('Case')}, "
                 f"selected_top1={row.get('Selected top-1')}, "
                 f"rank={format_rank(row.get('Selected rank'))}, "
-                f"conf={format_float(row.get('Selected confidence'), digits=3)}, "
-                f"mean_max_drop={format_float(row.get('Mean max occlusion drop'), digits=3)}, "
-                f"mean_rel_drop={format_float(row.get('Mean relative max drop'), digits=3)}"
+                f"confidence={format_float(row.get('Selected confidence'), digits=3)}, "
+                f"AMR@1={format_float(row.get('AMR@1'), digits=3)}, "
+                f"AMR@5={format_float(row.get('AMR@5'), digits=3)}"
             )
+        lines.append(
+            "  Grad-CAM is a post-hoc diagnostic. It shows where the target-class logit is spatially supported, "
+            "but it does not prove causal shortcut reliance."
+        )
+        lines.append(
+            "  In failure cases, Grad-CAM may still highlight semantically relevant regions, but confidence and "
+            "rank remain weak. Therefore Grad-CAM must be interpreted together with AMR, target confidence, "
+            "and target rank."
+        )
     lines.append("")
 
     lines.append("6. Files written")
-    written_paths = list(output_dir.glob("*"))
-    for summary_name in ("summary.txt", "summary.md"):
-        summary_path = output_dir / summary_name
-        if summary_path not in written_paths:
-            written_paths.append(summary_path)
-    for path in sorted(written_paths):
+    for name in final_asset_names():
+        path = output_dir / name
         lines.append(f"  {path.relative_to(PROJECT_ROOT)}")
 
     lines.append("")
     lines.append("Interpretation guardrail: these results support candidate classifier-salient cues, not definitive causal proof of spurious features.")
     return "\n".join(lines)
+
+
+def final_asset_names() -> list[str]:
+    return [
+        "main_results_table.csv",
+        "main_results_table.tex",
+        "real_vs_generated_table.csv",
+        "real_vs_generated_table.tex",
+        "confusion_distribution_table.csv",
+        "confusion_distribution_table.tex",
+        "optimization_best_steps_table.csv",
+        "optimization_trajectory.png",
+        "guardrail_rejections_table.csv",
+        "final_prompts_table.csv",
+        "generated_vs_real_top1.png",
+        "gradcam_selected_examples_table.csv",
+        "gradcam_selected_examples_table.tex",
+        "gradcam_presentation_grid.png",
+        "summary.txt",
+        "summary.md",
+    ]
 
 
 def write_latex_table(table: pd.DataFrame, path: Path, caption: str, label: str, float_format: str = "%.3f") -> None:
@@ -643,13 +569,6 @@ def read_optional_csv(path: Path | None) -> pd.DataFrame | None:
     if path is None or not path.exists():
         return None
     return pd.read_csv(path)
-
-
-def first_existing(paths: list[Path]) -> Path | None:
-    for path in paths:
-        if path.exists():
-            return path
-    return paths[0] if paths else None
 
 
 def target_classes(config: dict) -> list[str]:

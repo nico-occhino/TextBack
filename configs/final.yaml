@@ -35,29 +35,21 @@ textgrad:
   max_retries_on_rate_limit: 7
 
 descriptor_memory:
-  enabled: true
   max_descriptors_per_class: 12
   max_descriptor_words: 6
   positive_rank_threshold: 5
   min_confidence_threshold: 0.05
 
 image_generator:
-  provider: "diffusers"
   model_name: "runwayml/stable-diffusion-v1-5"
   height: 384
   width: 384
   num_inference_steps: 30
   guidance_scale: 7.5
-  use_float16: false
-  force_float32: true
-  enable_attention_slicing: true
-  enable_cpu_offload: true
-  disable_safety_checker: true
   base_seed: 42
   vary_seed: true
 
 classifier:
-  provider: "robustbench"
   model_name: "Salman2020Do_R50"
   threat_model: "Linf"
   dataset: "imagenet"

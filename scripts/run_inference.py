@@ -1,5 +1,3 @@
-"""Run TextBack inference evaluation from the command line."""
-
 import argparse
 import sys
 from pathlib import Path
@@ -12,14 +10,12 @@ from src.pipeline import TextBackPipeline
 
 
 def parse_args() -> argparse.Namespace:
-    """Parse command line arguments."""
     parser = argparse.ArgumentParser(description="Run TextBack inference.")
     parser.add_argument("--config", default="configs/default.yaml", help="Path to the YAML config file.")
     return parser.parse_args()
 
 
 def main() -> None:
-    """Load config, create the pipeline, and run inference."""
     args = parse_args()
     config = load_config(args.config)
     final_prompts_path = Path(config["paths"]["results_dir"]) / "final_prompts.json"

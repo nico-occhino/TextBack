@@ -1,15 +1,9 @@
-"""TextGrad prompt optimizer for TextBack.
-
-This module contains the real textual-backward backend.  It uses the official
-TextGrad API with a LiteLLM backward engine configured from YAML.
-"""
-
 import os
 import re
 import time
 from pathlib import Path
 
-
+ 
 FORBIDDEN_TERMS = {
     "tabby": ["tabby", "cat", "kitten", "feline"],
     "sports car": ["sports car", "car", "vehicle", "automobile"],
@@ -29,11 +23,11 @@ def contains_forbidden_terms(prompt: str, target_class: str) -> list[str]:
     found = []
 
     for term in FORBIDDEN_TERMS.get(target_class, []):
-        term_lower = term.lower()
-        if " " in term_lower:
-            pattern = r"\b" + re.escape(term_lower).replace(r"\ ", r"\s+") + r"\b"
-        else:
-            pattern = r"\b" + re.escape(term_lower) + r"\b"
+        escaped_words = [
+            re.escape(word)
+            for word in term.lower().split()
+        ]
+        pattern = r"\b" + r"\s+".join(escaped_words) + r"\b"
 
         if re.search(pattern, prompt_lower):
             found.append(term)
@@ -73,9 +67,9 @@ class TextGradPromptOptimizer:
             "Initial TextBack loss instruction",
             requires_grad=False,
             role_description=(
-                "non-trainable textual loss instruction that tells TextGrad how to "
+                "a non trained textual loss instruction that tells TextGrad how to "
                 "evaluate and critique the current image-generation prompt using "
-                "classifier feedback, target-rank information, and positive descriptors"
+                "classifier feedbacks and and positive descriptors"
             ),
         )
         self.loss_fn = self.tg.TextLoss(self.loss_instruction_variable)
@@ -85,7 +79,7 @@ class TextGradPromptOptimizer:
             initial_prompt,
             requires_grad=True,
             role_description=(
-                "name-free text-to-image prompt optimized through textual feedback "
+                "name free text to image prompt optimized through textual feedback "
                 f"to activate the hidden visual category '{target_class}'"
             ),
         )
@@ -97,12 +91,8 @@ class TextGradPromptOptimizer:
         return clean_prompt(prompt, self.max_prompt_words)
 
     def generate_initial_prompt(self, target_class: str) -> dict:
-        try:
-            from litellm import completion
-        except ImportError as error:
-            raise RuntimeError(
-                "litellm is required for LLM initial prompt generation."
-            ) from error
+        
+        from litellm import completion
 
         max_retries = max(1, self.initial_prompt_max_retries)
         forbidden_terms_config = FORBIDDEN_TERMS.get(target_class, [])
@@ -210,7 +200,7 @@ class TextGradPromptOptimizer:
             + "\n".join(topk_lines)
             + descriptor_section
             + f"\n\nForbidden terms for this target: {forbidden_terms}\n"
-            "The improved image-generation prompt must not contain any forbidden term or "
+            "The improved image generation prompt must not contain any forbidden term or "
             "close lexical variant that leaks the target label.\n"
             f"Maximum word reminder: return at most {self.max_prompt_words} words."
         )
@@ -330,8 +320,11 @@ class TextGradPromptOptimizer:
         ]
         return any(marker in message for marker in format_error_markers)
 
+    def _textgrad_engine_name(self) -> str:
+        return f"experimental:{self._litellm_model_name()}"
+
     def _set_backward_engine(self) -> None:
-        engine_name = self._litellm_model_name()
+        engine_name = self._textgrad_engine_name()
         try:
             self.tg.set_backward_engine(engine_name, override=True, cache=self.cache)
         except TypeError:
@@ -389,25 +382,10 @@ class TextGradPromptOptimizer:
         return self._normalize_backend_name(self.backward_engine)
 
     def _completion_text(self, response) -> str:
-        try:
-            return str(response["choices"][0]["message"]["content"])
-        except (KeyError, IndexError, TypeError):
-            pass
-
-        try:
-            return str(response.choices[0].message.content)
-        except (AttributeError, IndexError, TypeError) as error:
-            raise RuntimeError("Could not read text from LiteLLM response.") from error
+        return str(response.choices[0].message.content)
 
     def _value_of(self, variable) -> str:
-        if hasattr(variable, "value"):
-            return str(variable.value)
-        if hasattr(variable, "get_value"):
-            return str(variable.get_value())
-        return str(variable)
+        return str(variable.value)
 
     def _set_value(self, variable, value: str) -> None:
-        if hasattr(variable, "set_value"):
-            variable.set_value(value)
-        else:
-            variable.value = value
+        variable.value = value

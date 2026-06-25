@@ -407,7 +407,6 @@ class TextBackPipeline:
         top1_correct: bool,
         top5_correct: bool,
     ) -> None:
-        """Save one inference image result to CSV."""
         row = {
             "target_class": target_class,
             "image_index": image_index,

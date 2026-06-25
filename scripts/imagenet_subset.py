@@ -1,9 +1,3 @@
-"""Create a small ImageNet-1k subset with Hugging Face streaming.
-
-This script does not download the full dataset.  It streams training examples
-and saves only the requested number of images for the selected classes.
-"""
-
 import argparse
 import os
 import sys
@@ -18,7 +12,6 @@ DEFAULT_CLASSES = ["tabby", "sports car", "cowboy hat", "volcano", "book jacket"
 
 
 def parse_args() -> argparse.Namespace:
-    """Parse command line arguments."""
     parser = argparse.ArgumentParser(description="Stream a small ImageNet-1k subset.")
     parser.add_argument("--output-dir", default="data/imagenet_subset", help="Folder where images are saved.")
     parser.add_argument("--n-per-class", type=int, default=50, help="Number of images to save per class.")
@@ -27,7 +20,6 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
-    """Stream ImageNet and save images for the selected classes."""
     load_dotenv()
     hf_token = os.getenv("HF_TOKEN")
     if not hf_token:
@@ -78,7 +70,6 @@ def main() -> None:
 
 
 def build_class_id_map(class_names: list[str]) -> dict[str, int]:
-    """Map exact torchvision ImageNet labels to integer IDs."""
     categories = ResNet50_Weights.DEFAULT.meta["categories"]
     missing = [class_name for class_name in class_names if class_name not in categories]
     if missing:

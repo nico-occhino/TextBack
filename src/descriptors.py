@@ -17,20 +17,22 @@ GENERIC_DESCRIPTORS = {
 def extract_descriptors_from_prompt(
     prompt: str,
     max_descriptor_words: int,
-    target_class: str | None = None,
+    target_class: str,
 ) -> list[str]:
     descriptors = []
     seen = set()
+
     for fragment in re.split(r"[,;.]", prompt):
         descriptor = " ".join(fragment.strip().split())
         descriptor_key = descriptor.lower()
+
         if not descriptor or descriptor_key in seen:
             continue
         if descriptor_key in GENERIC_DESCRIPTORS:
             continue
         if len(descriptor.split()) > max_descriptor_words:
             continue
-        if target_class and contains_forbidden_terms(descriptor, target_class):
+        if contains_forbidden_terms(descriptor, target_class):
             continue
 
         descriptors.append(descriptor)
@@ -54,10 +56,12 @@ def update_descriptor_memory(
     target_confidence = float(classifier_result.get("target_confidence", 0.0))
     rank_threshold = int(memory_config.get("positive_rank_threshold", 5))
     confidence_threshold = float(memory_config.get("min_confidence_threshold", 0.03))
+
     is_positive = (
         target_rank is not None
         and int(target_rank) <= rank_threshold
     ) or target_confidence >= confidence_threshold
+
     if not is_positive:
         return memory
 
